@@ -18,9 +18,14 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: android-actions/setup-android@v3
-      - name: Install Android SDK
-        run: sdkmanager "platforms;android-37" "build-tools;36.0.0" "platform-tools"
+      - name: Install Android SDK from GitHub runner command-line tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDKMANAGER="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          test -x "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null || test "${PIPESTATUS[1]}" -eq 0
+          "$SDKMANAGER" "platforms;android-37" "build-tools;36.0.0" "platform-tools"
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 9.3.1
