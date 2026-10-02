@@ -41,3 +41,13 @@ The verification sources are included under `tools/ModelSanity.kt`, `tools/Archi
 
 - Original asset ZIP exporter added (inspection-scoped source files + structured data + manifest). **Pending** actual Android SAF output validation and integration test with multiple media/large archives.
 - Original vector icon added. **Pending** adaptive launcher visual review and high-density screenshot tests.
+
+## Verified GitHub Android CI after compiler and lint fixes (2026-10-02)
+
+- Successful run: https://github.com/khaledhasneen1993/Handover/actions/runs/37049194034
+- Source SHA: `044470249ad9ecc7e79adc9090e86db0d10a6228`
+- `:app:assembleDebug`, `:app:bundleRelease`, `:app:lintDebug`, `:app:testDebugUnitTest`: PASS, Gradle exit code 0.
+- Android lint: 0 errors, 26 warnings. Remaining warnings include older library version suggestions, backup free-space allocation guidance and monochrome launcher icon.
+- JVM unit tests: 4 model tests + 5 backup-policy tests, 0 failures and 0 skipped.
+- CI artifact: `handover-development-artifacts` (artifact ID `11246056824`) contains debug APK, **unsigned** release AAB, lint and unit-test reports.
+- APK install, on-device UI/camera operation, production signing, PDF text shaping and backup restore have not been verified. Do not confuse CI success with release certification.
