@@ -1,7 +1,7 @@
 package com.khaled.handover.ui
 
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 
 /** Local UI phrase catalogue; unknown custom room names are intentionally left unchanged. */
 private val phrases: Map<String, Map<String, String>> = mapOf(
@@ -173,4 +173,4 @@ private val phrases: Map<String, Map<String, String>> = mapOf(
     )
 )
 fun translate(english: String, language: String): String = phrases[language]?.get(english) ?: english
-@Composable fun tr(english: String): String = translate(english, LocalContext.current.resources.configuration.locales[0].language)
+@Composable fun tr(english: String): String = translate(english, LocalConfiguration.current.locales[0].language)
