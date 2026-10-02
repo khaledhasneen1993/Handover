@@ -68,7 +68,7 @@ class AssetStore(private val ctx: Context) {
             val thumb = File(thumbnails, "$id.jpg")
             createThumbnail(final, thumb)
             val exifTime = if (source == "IMPORTED") readExifTime(final) else null
-            MediaAsset(id, sessionId, itemId, relative, "thumbnails/$id.jpg", mime, final.length(), width, height, hash,
+            return MediaAsset(id, sessionId, itemId, relative, "thumbnails/$id.jpg", mime, final.length(), width, height, hash,
                 source, System.currentTimeMillis(), capturedAt ?: exifTime,
                 if (source == "CAMERA") "DEVICE_CLOCK" else if (exifTime != null) "UNVERIFIED_EXIF" else "UNKNOWN")
         } catch (e: Exception) { stage.delete(); final.delete(); File(thumbnails, "$id.jpg").delete(); throw e }
