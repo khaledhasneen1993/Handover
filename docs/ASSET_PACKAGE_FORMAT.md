@@ -1,0 +1,7 @@
+# Handover original asset package v1 (not an application backup)
+
+User explicitly chooses **Export original files** on the report screen and an output destination through Android Storage Access Framework. No data is sent automatically. The exported ZIP includes `data.json` (`format=handover-assets`, `schema=1`) containing the inspection, exact template snapshot, sessions with time zones, checklist item states, media provenance and SHA-256, annotations, user observations, manual comparison pairs and accessories. Original imported and CameraX file bytes appear under `originals/<UUID>.<ext>` unchanged, and every ZIP content member is enumerated with size and hash in `manifest.json` (`format=handover-asset-manifest`, `schema=1`). The exporter verifies source hashes against the database before packaging.
+
+An asset ZIP is **not** a portable application backup and cannot be restored with BackupManager. It contains **full user-entered identifying information**, potentially image location metadata and sensitive pixels, regardless of any PDF privacy toggles. The user must review recipients and secure the selected output destination. ZIP manifest hashes detect transfer corruption relative to the manifest but do not prove that the underlying content or timestamps are independently authentic.
+
+Device and large-archive export tests are pending. This path is independent of `HBK0/HBK1` encrypted backup and the PDF generator.

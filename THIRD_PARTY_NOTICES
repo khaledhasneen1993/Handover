@@ -1,0 +1,5 @@
+Third-party source dependencies (check resolved transitive dependencies before release):
+AndroidX Compose, Room, CameraX, Core, AppCompat, Lifecycle, WorkManager, EXIF Interface — Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0).
+Kotlin and Kotlin Compose compiler — Apache License 2.0 (https://github.com/JetBrains/kotlin/blob/master/license/LICENSE.txt).
+Gradle and Android Gradle Plugin — check distribution license terms before binary redistribution.
+No external photo assets, custom fonts, or proprietary graphics are bundled. Android platform's shaping/fonts are used by the current PDF renderer; Arabic font embedding and redistribution compliance remain outstanding release gates.

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <!-- Original document/check icon using Handover's navy and teal design tokens. -->
+    <path android:fillColor="#00000000" android:strokeColor="#102C48"
+        android:strokeWidth="4.5" android:strokeLineCap="round" android:strokeLineJoin="round"
+        android:pathData="M36,24 L61,24 L74,37 L74,78 Q74,83 69,83 L36,83 Q31,83 31,78 L31,29 Q31,24 36,24 Z"/>
+    <path android:fillColor="#E0F7F8" android:pathData="M60,24 L60,35 Q60,39 64,39 L74,39 L60,24 Z"/>
+    <path android:fillColor="#00000000" android:strokeColor="#008E9A"
+        android:strokeWidth="5.2" android:strokeLineCap="round" android:strokeLineJoin="round"
+        android:pathData="M41,56 L49,64 L65,46"/>
+    <path android:fillColor="#008E9A" android:pathData="M78,26 A4,4 0,1 1,70 26 A4,4 0,1 1,78 26"/>
+</vector>
