@@ -28,6 +28,7 @@ jobs:
           test -f "$RUNNER_TEMP/handover-unpacked/tools/source_sanity.py"
           rsync -a --ignore-existing --exclude='.git' "$RUNNER_TEMP/handover-unpacked/" ./
           python3 tools/source_sanity.py
+          echo "Imported source files: $(find app -type f | wc -l)"
       - name: Commit imported source files
         shell: bash
         run: |
@@ -35,6 +36,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
+          git status --short
           if git diff --cached --quiet; then
             echo "All source files already exist"
           else
