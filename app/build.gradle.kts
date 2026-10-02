@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace = "com.khaled.handover"
-    compileSdk = 37
+    compileSdk = 36
     defaultConfig {
         applicationId = "com.khaled.handover"
         minSdk = 26
