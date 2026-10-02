@@ -2,10 +2,12 @@ name: Android quality gates
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - docs/CI_RESULT.md
   pull_request:
   workflow_dispatch:
 permissions:
-  contents: read
+  contents: write
 jobs:
   quality:
     runs-on: ubuntu-latest
@@ -23,7 +25,15 @@ jobs:
         with:
           gradle-version: 9.3.1
       - name: Build, lint and unit tests
-        run: gradle --no-daemon :app:assembleDebug :app:bundleRelease :app:lintDebug :app:testDebugUnitTest
+        id: build
+        shell: bash
+        run: |
+          set +e
+          gradle --no-daemon :app:assembleDebug :app:bundleRelease :app:lintDebug :app:testDebugUnitTest > "$RUNNER_TEMP/handover-build.log" 2>&1
+          code=$?
+          cat "$RUNNER_TEMP/handover-build.log"
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit 0
       - name: Publish development build artifacts and reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -34,5 +44,42 @@ jobs:
             app/build/outputs/bundle/release/*.aab
             app/build/reports/**
             app/build/test-results/**
+            ${{ runner.temp }}/handover-build.log
           if-no-files-found: warn
-# Never upload production signing keys. The release bundle remains unsigned.
+      - name: Write auditable quality-gate result
+        if: always() && github.event_name == 'push'
+        shell: bash
+        env:
+          BUILD_EXIT: ${{ steps.build.outputs.exit_code }}
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+        run: |
+          mkdir -p docs
+          {
+            echo '# Latest Handover Android CI run'
+            echo
+            echo "- Run: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "- Source commit: $GITHUB_SHA"
+            echo "- Gradle outcome: $BUILD_OUTCOME"
+            echo "- Gradle exit code: ${BUILD_EXIT:-not executed}"
+            echo "- Runner: ubuntu-latest, Temurin 17, Gradle 9.3.1, Android API 37"
+            echo
+            echo 'This is automated runner evidence, not a device/camera test or release certification.'
+            if test -f "$RUNNER_TEMP/handover-build.log"; then
+              echo
+              echo '## Selected diagnostics'
+              echo '```text'
+              grep -E '^e: |^FAILURE:|^BUILD (FAILED|SUCCESSFUL)|^\* What went wrong:|^Execution failed for task ' "$RUNNER_TEMP/handover-build.log" | head -40 || true
+              echo '```'
+            fi
+          } > docs/CI_RESULT.md
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/CI_RESULT.md
+          if ! git diff --cached --quiet; then
+            git commit -m "ci: record actual Handover Android build result [skip ci]"
+            git push origin HEAD:main
+          fi
+      - name: Fail job when Android gates fail
+        if: always() && steps.build.outputs.exit_code != '0'
+        run: exit 1
+# Development artifacts are NOT release-signed. Never add private signing keys to source control.
