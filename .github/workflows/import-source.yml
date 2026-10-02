@@ -42,4 +42,5 @@ jobs:
           else
             git commit -m "feat: expand preserved Handover Android source"
             git push origin HEAD:main
+# Trigger source import after GitHub connection authorization was repaired.
           fi
