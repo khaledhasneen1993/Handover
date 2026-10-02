@@ -1,0 +1,32 @@
+name: Import preserved Handover source
+on:
+  push:
+    paths:
+      - '.handover-transfer/part10.txt'
+permissions:
+  contents: write
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reconstruct preserved source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find .handover-transfer -name 'part*.txt' | wc -l)" -eq 10
+          cat .handover-transfer/part{01..10}.txt | base64 -d > "$RUNNER_TEMP/handover.tar.xz"
+          echo "Transfer checksum check required before extraction"
+          # Exact expected checksum is filled in before the final transfer part is committed.
+          test -f .handover-transfer/SHA256
+          sha256sum -c .handover-transfer/SHA256 < /dev/null
+          tar -tJf "$RUNNER_TEMP/handover.tar.xz" | grep -vE '^\\./([A-Za-z0-9._/-]+)?$' && exit 1 || true
+          tar -xJf "$RUNNER_TEMP/handover.tar.xz" -C .
+      - name: Commit source files
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git rm -r -f --ignore-unmatch .handover-transfer .github/workflows/import-source.yml
+          git diff --cached --quiet || git commit -m 'feat: import preserved Handover Android source'
+          git push
