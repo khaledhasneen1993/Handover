@@ -6,6 +6,8 @@ import android.net.Uri
 import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import com.khaled.handover.HandoverApp
 import com.khaled.handover.data.*
 import com.khaled.handover.report.ReportMaker
