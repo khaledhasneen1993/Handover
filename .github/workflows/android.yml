@@ -6,6 +6,9 @@ on:
       - docs/CI_RESULT.md
   pull_request:
   workflow_dispatch:
+concurrency:
+  group: handover-android-${{ github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: write
 jobs:
@@ -64,7 +67,7 @@ jobs:
             echo
             echo "- Run: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
             echo "- Source commit: $GITHUB_SHA"
-            echo "- Gradle outcome: $BUILD_OUTCOME"
+            if test "${BUILD_EXIT:-1}" = "0"; then echo "- Gradle result: PASS"; else echo "- Gradle result: FAIL"; fi
             echo "- Gradle exit code: ${BUILD_EXIT:-not executed}"
             echo "- Runner: ubuntu-latest, Temurin 17, Gradle 9.3.1, Android API 36"
             echo
