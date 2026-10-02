@@ -25,7 +25,7 @@ jobs:
           SDKMANAGER="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
           test -x "$SDKMANAGER"
           yes | "$SDKMANAGER" --licenses >/dev/null || test "${PIPESTATUS[1]}" -eq 0
-          "$SDKMANAGER" "platforms;android-37" "build-tools;36.0.0" "platform-tools"
+          "$SDKMANAGER" "platforms;android-36" "build-tools;36.0.0" "platform-tools"
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 9.3.1
@@ -66,7 +66,7 @@ jobs:
             echo "- Source commit: $GITHUB_SHA"
             echo "- Gradle outcome: $BUILD_OUTCOME"
             echo "- Gradle exit code: ${BUILD_EXIT:-not executed}"
-            echo "- Runner: ubuntu-latest, Temurin 17, Gradle 9.3.1, Android API 37"
+            echo "- Runner: ubuntu-latest, Temurin 17, Gradle 9.3.1, Android API 36"
             echo
             echo 'This is automated runner evidence, not a device/camera test or release certification.'
             if test -f "$RUNNER_TEMP/handover-build.log"; then
