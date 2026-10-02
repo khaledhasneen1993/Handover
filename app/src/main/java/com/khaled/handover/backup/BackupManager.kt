@@ -102,7 +102,7 @@ class BackupManager(private val context: Context, private val repo: InspectionRe
                 out.putNextEntry(ZipEntry("manifest.json")); out.write(manifest.toString().toByteArray(Charsets.UTF_8));out.closeEntry()
             }
             FileOutputStream(output).use { result ->
-                if(password.isNullOrEmpty()) {result.write("HBK0".toByteArray());zip.inputStream().use{it.copyTo(result)}}
+                if((password == null || password.isEmpty())) {result.write("HBK0".toByteArray());zip.inputStream().use{it.copyTo(result)}}
                 else {
                     val salt = ByteArray(16).also { random.nextBytes(it) }; val iv = ByteArray(12).also {random.nextBytes(it)}
                     result.write("HBK1".toByteArray());result.write(salt);result.write(iv)
@@ -134,7 +134,7 @@ class BackupManager(private val context: Context, private val repo: InspectionRe
                 when(String(magic,Charsets.US_ASCII)) {
                     "HBK0" -> clear.outputStream().use{out->input.copyTo(out)}
                     "HBK1" -> {
-                        require(!password.isNullOrEmpty()){"Backup password required"}
+                        require((password != null && password.isNotEmpty())){"Backup password required"}
                         val salt=ByteArray(16);val iv=ByteArray(12)
                         require(input.read(salt)==16 && input.read(iv)==12)
                         val cipher=Cipher.getInstance("AES/GCM/NoPadding").apply{init(Cipher.DECRYPT_MODE,key(password!!,salt),GCMParameterSpec(128,iv))}
@@ -179,7 +179,7 @@ class BackupManager(private val context: Context, private val repo: InspectionRe
             require(payload.getInt("schema")==1)
             val tables=payload.getJSONObject("tables")
             // No extra tables, columns or executable SQL from untrusted archives.
-            require(tables.keySet()==TABLES.toSet())
+            require(tables.keys().asSequence().toSet()==TABLES.toSet())
             val savedMedia=tables.getJSONArray("media")
             require(savedMedia.length()<=MAX_FILES)
             for(i in 0 until savedMedia.length()){
@@ -213,7 +213,7 @@ class BackupManager(private val context: Context, private val repo: InspectionRe
                     val rows=tables.getJSONArray(table)
                     for(i in 0 until rows.length()){
                         val row=rows.getJSONObject(i)
-                        val columns=row.keySet().toList()
+                        val columns=row.keys().asSequence().toList()
                         require(columns.isNotEmpty() && columns.all { it in allowed })
                         val placeholders=columns.joinToString(",") {"?"}
                         val values=columns.map { val v=row.get(it);if(v==JSONObject.NULL)null else v }.toTypedArray()
