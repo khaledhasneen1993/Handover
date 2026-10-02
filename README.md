@@ -2,7 +2,7 @@
 
 Offline-first, paid-once property-condition documentation for rental vehicles, devices and apartments. The app saves originals privately, guides users through condition checkpoints, supports manual before/after comparison, and prepares local PDF reports and optional password-protected backups. The default language is **English**; Arabic, French and Spanish are included as additional locales.
 
-**Current status: under active development; not approved for sale or public release.** The Android source is in this repository, but the latest fully documented Android CI run failed Kotlin compilation. Its specific diagnostics have been fixed in later commits; a passing follow-up compile/lint/unit-test run and on-device checks are still required. See [CI result](docs/CI_RESULT.md), [development handoff](docs/HANDOFF.md) and [release gates](docs/RELEASE_CHECKLIST.md).
+**Current status: Android CI passes; not approved for sale or public release.** The [verified run 37049194034](https://github.com/khaledhasneen1993/Handover/actions/runs/37049194034) on source commit `044470249ad9ecc7e79adc9090e86db0d10a6228` completed debug APK and unsigned release AAB builds, Android lint (0 errors, 26 warnings), and 9/9 JVM unit tests. Device camera tests, backup restoration, Arabic PDF visual review and production signing are still required. See [CI result](docs/CI_RESULT.md), [development handoff](docs/HANDOFF.md) and [release gates](docs/RELEASE_CHECKLIST.md).
 
 ## Development setup
 
