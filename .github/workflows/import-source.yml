@@ -1,32 +1,43 @@
 name: Import preserved Handover source
 on:
   push:
+    branches: [main]
     paths:
-      - '.handover-transfer/part10.txt'
+      - handover-source.tar.xz.base64
+      - .github/workflows/import-source.yml
+  workflow_dispatch:
 permissions:
   contents: write
 jobs:
-  import:
+  import-source:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - name: Reconstruct preserved source
+        with:
+          persist-credentials: true
+      - name: Verify and unpack preserved development source
         shell: bash
         run: |
           set -euo pipefail
-          test "$(find .handover-transfer -name 'part*.txt' | wc -l)" -eq 10
-          cat .handover-transfer/part{01..10}.txt | base64 -d > "$RUNNER_TEMP/handover.tar.xz"
-          echo "Transfer checksum check required before extraction"
-          # Exact expected checksum is filled in before the final transfer part is committed.
-          test -f .handover-transfer/SHA256
-          sha256sum -c .handover-transfer/SHA256 < /dev/null
-          tar -tJf "$RUNNER_TEMP/handover.tar.xz" | grep -vE '^\\./([A-Za-z0-9._/-]+)?$' && exit 1 || true
-          tar -xJf "$RUNNER_TEMP/handover.tar.xz" -C .
-      - name: Commit source files
+          base64 -d handover-source.tar.xz.base64 > "$RUNNER_TEMP/handover-source.tar.xz"
+          mkdir -p "$RUNNER_TEMP/handover-unpacked"
+          tar -xJf "$RUNNER_TEMP/handover-source.tar.xz" -C "$RUNNER_TEMP/handover-unpacked" --no-same-owner
+          test -f "$RUNNER_TEMP/handover-unpacked/app/build.gradle.kts"
+          test -f "$RUNNER_TEMP/handover-unpacked/settings.gradle.kts"
+          test -f "$RUNNER_TEMP/handover-unpacked/tools/source_sanity.py"
+          rsync -a --ignore-existing --exclude='.git' "$RUNNER_TEMP/handover-unpacked/" ./
+          python3 tools/source_sanity.py
+      - name: Commit imported source files
+        shell: bash
         run: |
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git rm -r -f --ignore-unmatch .handover-transfer .github/workflows/import-source.yml
-          git diff --cached --quiet || git commit -m 'feat: import preserved Handover Android source'
-          git push
+          if git diff --cached --quiet; then
+            echo "All source files already exist"
+          else
+            git commit -m "feat: expand preserved Handover Android source"
+            git push origin HEAD:main
+          fi
