@@ -125,8 +125,21 @@ class BackupManager(private val context: Context, private val repo: InspectionRe
         require(temp.renameTo(journalFile)) { "Cannot persist restore journal" }
     }
     /** Must finish before the app displays any restored records or accepts a new restore. */
+    /** Remove only orphaned cache objects from a previous process; never sweep originals or exports. */
+    private fun cleanupAbandonedRestoreTemps() {
+        val cacheRoot = context.cacheDir.canonicalFile
+        cacheRoot.listFiles()?.forEach { entry ->
+            val directChild = runCatching { entry.canonicalFile.parentFile == cacheRoot }.getOrDefault(false)
+            if (!directChild) return@forEach
+            when {
+                RestoreScratchPolicy.isStage(entry.name) && entry.isDirectory -> entry.deleteRecursively()
+                RestoreScratchPolicy.isScratch(entry.name) && entry.isFile -> entry.delete()
+            }
+        }
+    }
+
     suspend fun recoverInterruptedRestore() = withContext(Dispatchers.IO) {
-        if (!journalFile.exists()) return@withContext
+        if (!journalFile.exists()) { cleanupAbandonedRestoreTemps(); return@withContext }
         val log = JSONObject(journalFile.readText())
         // SQLite either committed the complete restore transaction or rolled it back.
         if (repo.dao.allInspections().isEmpty()) {
@@ -140,6 +153,7 @@ class BackupManager(private val context: Context, private val repo: InspectionRe
         log.optString("stagingName").takeIf { it.matches(Regex("restore-[0-9a-f-]{36}")) }
             ?.let { File(context.cacheDir,it).deleteRecursively() }
         journalFile.delete()
+        cleanupAbandonedRestoreTemps()
     }
     suspend fun restore(uri: Uri, password: CharArray? = null) = withContext(Dispatchers.IO) {
         // Restore is intentionally create-only: an existing database is never overwritten or silently merged.
