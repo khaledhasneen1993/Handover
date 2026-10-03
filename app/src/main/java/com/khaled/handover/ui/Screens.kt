@@ -10,6 +10,8 @@ import android.os.ParcelFileDescriptor
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.*
+import androidx.activity.compose.BackHandler
+import kotlinx.coroutines.CancellationException
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -92,9 +94,17 @@ private val normal = 15.sp
 @Composable
 fun HandoverScreen(vm: HandoverViewModel) {
     val context = LocalContext.current
-    val all by vm.inspections.collectAsState()
     val snackbar = remember { SnackbarHostState() }
     LaunchedEffect(vm.error) { vm.error?.let { snackbar.showSnackbar(it); vm.error = null } }
+    BackHandler(vm.recoveryReady && vm.screen != "HOME") { vm.back() }
+    if (!vm.recoveryReady) {
+        Box(Modifier.fillMaxSize(),contentAlignment=Alignment.Center) {
+            if(vm.recoveryError!=null) Text("Unable to recover saved data: ${vm.recoveryError}",color=MaterialTheme.colorScheme.error)
+            else CircularProgressIndicator()
+        }
+        return
+    }
+    val all by vm.inspections.collectAsState()
     Scaffold(
         snackbarHost = { SnackbarHost(snackbar) },
         bottomBar = { if (vm.screen in listOf("HOME", "ARCHIVE", "SETTINGS")) {
@@ -337,7 +347,15 @@ private data class InspectionContent(val inspection: Inspection?, val items: Lis
                     }},modifier=Modifier.fillMaxWidth()) { Text(tr("Archive operation")) } }
                     item { TextButton(onClick={confirmDelete=true},modifier=Modifier.fillMaxWidth()) {Text("Delete operation",color=MaterialTheme.colorScheme.error)} }
                 }
-                "FIRST", "RETURN" -> item { LaunchedScreenLink(if(tab=="FIRST") "Initial condition" else "Return condition") { vm.session(if(tab=="FIRST")Phase.BASELINE else Phase.RETURN) } }
+                "FIRST", "RETURN" -> item {
+                    val returning=tab=="RETURN"
+                    PrimaryButton(if(returning)"Return condition" else "Initial condition",
+                        enabled=!returning || first?.completedAt!=null) {
+                        vm.session(if(returning)Phase.RETURN else Phase.BASELINE)
+                    }
+                    if(returning && first?.completedAt==null)
+                        Text("Complete initial condition first",color=MaterialTheme.colorScheme.error)
+                }
                 "COMPARE" -> item { LaunchedScreenLink("View comparisons") {vm.go("COMPARISON")} }
                 "REPORTS" -> item { LaunchedScreenLink("Create a report") {vm.go("REPORT")} }
             }
@@ -391,9 +409,17 @@ private data class InspectionContent(val inspection: Inspection?, val items: Lis
 private data class SessionContent(val session: CaptureSession?, val items:List<ChecklistItem>,val states:Map<String,ItemSessionState>,val media:Map<String,List<MediaAsset>>)
 @Composable private fun SessionScreen(vm:HandoverViewModel) {
     val info by produceState(SessionContent(null,emptyList(),emptyMap(),emptyMap()),vm.inspectionId,vm.phase,vm.refresh) {
-        val s=vm.repo.ensureSession(vm.inspectionId,vm.phase); val d=vm.repo.dao
-        val items=d.items(vm.inspectionId); val states=d.states(s.id).associateBy {it.itemId}
-        value=SessionContent(s,items,states,items.associate{it.id to d.itemMedia(it.id,s.id)})
+        try {
+            val session=vm.repo.ensureSession(vm.inspectionId,vm.phase)
+            val d=vm.repo.dao
+            val items=d.items(vm.inspectionId)
+            val states=d.states(session.id).associateBy {it.itemId}
+            value=SessionContent(session,items,states,items.associate {it.id to d.itemMedia(it.id,session.id)})
+        } catch(cancelled:CancellationException) { throw cancelled }
+        catch(failure:Exception) {
+            vm.error=failure.message ?: "Cannot open session"
+            vm.go("DETAIL")
+        }
     }
     val session=info.session
     if(session==null){ Box(Modifier.fillMaxSize(),contentAlignment=Alignment.Center){CircularProgressIndicator()};return }
