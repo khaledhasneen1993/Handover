@@ -41,4 +41,13 @@ class RestoreAdmissionTest {
         RestoreAdmission.validateReferencedAssets(listOf(media()),emptyList(),files+
             ("exports/$session.pdf" to BackupEntryDigest(100,hash)))
     }
+
+    @Test fun onlyAppOwnedRestoreScratchNamesMayBeCleaned() {
+        assertTrue(RestoreScratchPolicy.isStage("restore-3edb8d38-6ef0-423f-aaf1-7416a6c4e649"))
+        assertTrue(RestoreScratchPolicy.isScratch("handover-incoming-1299111.bak"))
+        assertTrue(RestoreScratchPolicy.isScratch("handover-decrypted-1299111.zip"))
+        assertFalse(RestoreScratchPolicy.isStage("restore-../../originals"))
+        assertFalse(RestoreScratchPolicy.isScratch("handover-export-1299111.zip"))
+        assertFalse(RestoreScratchPolicy.isScratch("handover-incoming-1299111.bak/../x"))
+    }
 }
