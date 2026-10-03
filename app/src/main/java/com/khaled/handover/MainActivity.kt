@@ -1,6 +1,7 @@
 package com.khaled.handover
 
 import android.os.Bundle
+import android.content.Intent
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
@@ -23,6 +24,8 @@ import com.khaled.handover.ui.HandoverTheme
 import com.khaled.handover.ui.HandoverViewModel
 
 class MainActivity: AppCompatActivity() {
+    companion object { const val EXTRA_INSPECTION_ID = "handover_inspection_id" }
+    private var pendingInspectionId by mutableStateOf<String?>(null)
     private var unlocked by mutableStateOf(true)
     private val allowed = BiometricManager.Authenticators.BIOMETRIC_STRONG or BiometricManager.Authenticators.DEVICE_CREDENTIAL
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -30,11 +33,19 @@ class MainActivity: AppCompatActivity() {
         val language = preference.getString("language", "en") ?: "en"
         AppCompatDelegate.setApplicationLocales(LocaleListCompat.forLanguageTags(language))
         super.onCreate(savedInstanceState)
+        pendingInspectionId = intent?.getStringExtra(EXTRA_INSPECTION_ID)
         unlocked = !preference.getBoolean("lock_enabled", false)
         enableEdgeToEdge()
         setContent {
             val vm: HandoverViewModel = viewModel()
             var hasStarted by rememberSaveable { mutableStateOf(preference.getBoolean("onboarding_seen", false)) }
+            LaunchedEffect(pendingInspectionId, unlocked, hasStarted, vm.recoveryReady) {
+                val target = pendingInspectionId
+                if (target != null && unlocked && hasStarted && vm.recoveryReady) {
+                    if (vm.repo.dao.getInspection(target) != null) vm.inspect(target)
+                    pendingInspectionId = null
+                }
+            }
             val theme = preference.getString("theme", "system") ?: "system"
             HandoverTheme(if (theme == "system") null else theme == "dark") {
                 if (!unlocked) LockScreen(::authenticate)
@@ -46,6 +57,11 @@ class MainActivity: AppCompatActivity() {
                 else HandoverScreen(vm)
             }
         }
+    }
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        pendingInspectionId = intent.getStringExtra(EXTRA_INSPECTION_ID)
     }
     override fun onResume() {
         super.onResume()
