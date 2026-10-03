@@ -49,7 +49,7 @@ class ReportMaker(private val context: Context, private val repository: Inspecti
             val inspection: Inspection, val sessions: List<CaptureSession>, val items: List<ChecklistItem>,
             val notes: List<Observation>, val accessories: List<Accessory>,
             val states: Map<String,List<ItemSessionState>>, val media: Map<String,List<MediaAsset>>,
-            val annotations: Map<String,List<Annotation>>, val comparisons: Map<String,ComparisonPair>,
+            val annotations: Map<String,List<com.khaled.handover.data.Annotation>>, val comparisons: Map<String,ComparisonPair>,
             val revision: Int
         )
         val snapshot=repository.db.withTransaction {
