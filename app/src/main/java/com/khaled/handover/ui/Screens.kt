@@ -20,6 +20,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.*
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
@@ -616,30 +617,97 @@ private data class SessionContent(val session: CaptureSession?, val items:List<C
     }
 }
 
-@Composable private fun AccessoriesScreen(vm:HandoverViewModel) {
-    val list by produceState(emptyList<Accessory>(),vm.inspectionId,vm.refresh){value=vm.repo.dao.accessories(vm.inspectionId)}
-    var name by remember{mutableStateOf("")};var before by remember{mutableStateOf("1")};var after by remember{mutableStateOf("")};var note by remember{mutableStateOf("")}
+@Composable private fun AccessoriesScreen(vm: HandoverViewModel) {
+    val list by produceState(emptyList<Accessory>(), vm.inspectionId, vm.refresh) {
+        value = vm.repo.dao.accessories(vm.inspectionId)
+    }
+    var editingId by rememberSaveable { mutableStateOf<String?>(null) }
+    var pendingDeleteId by remember { mutableStateOf<String?>(null) }
+    var name by rememberSaveable { mutableStateOf("") }
+    var before by rememberSaveable { mutableStateOf("1") }
+    var after by rememberSaveable { mutableStateOf("") }
+    var note by rememberSaveable { mutableStateOf("") }
+    val firstQuantity = before.toIntOrNull()
+    val returnQuantity = if (after.isBlank()) null else after.toIntOrNull()
+    val valid = name.trim().length in 1..120 && firstQuantity != null &&
+        firstQuantity in 0..10_000 && (after.isBlank() || returnQuantity != null &&
+        returnQuantity in 0..10_000) && note.length <= 2000
+    val resetDraft = {
+        editingId = null; name = ""; before = "1"; after = ""; note = ""
+    }
     Column(Modifier.fillMaxSize()) {
-        Header("Accessories",{vm.go("DETAIL")})
-        LazyColumn(Modifier.weight(1f),contentPadding=PaddingValues(18.dp),verticalArrangement=Arrangement.spacedBy(14.dp)) {
-            items(list){accessory-> AppCard(Modifier.fillMaxWidth()){
-                Text(accessory.name,fontWeight=FontWeight.Bold)
-                Text("Initial: ${accessory.baselineQuantity}  ·  Return: ${accessory.returnQuantity?.toString() ?: "Not recorded"}")
-                if(accessory.note.isNotBlank())Text(accessory.note)
-            }}
-            item { Text(tr("Add accessory"),fontSize=19.sp,fontWeight=FontWeight.Bold) }
-            item { OutlinedTextField(name,{name=it},label={Text(tr("Name"))},modifier=Modifier.fillMaxWidth()) }
-            item { Row(horizontalArrangement=Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(before,{before=it.filter(Char::isDigit)},label={Text(tr("Initial quantity"))},modifier=Modifier.weight(1f),singleLine=true)
-                OutlinedTextField(after,{after=it.filter(Char::isDigit)},label={Text(tr("Return quantity"))},modifier=Modifier.weight(1f),singleLine=true)
-            } }
-            item { OutlinedTextField(note,{note=it},label={Text(tr("Optional note"))},modifier=Modifier.fillMaxWidth()) }
-            item { PrimaryButton("Save accessory",enabled=name.isNotBlank()&&before.toIntOrNull()!=null) {
-                vm.addAccessory(name,before.toInt(),after.toIntOrNull(),note)
-                name="";before="1";after="";note=""
-            } }
+        Header("Accessories", { vm.go("DETAIL") })
+        LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            items(list, key = { it.id }) { accessory ->
+                AppCard(Modifier.fillMaxWidth()) {
+                    Text(accessory.name, fontWeight = FontWeight.Bold)
+                    Text("Initial: ${accessory.baselineQuantity} · Return: ${accessory.returnQuantity?.toString() ?: "Not recorded"}")
+                    if (accessory.note.isNotBlank()) Text(accessory.note)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = {
+                            editingId = accessory.id
+                            name = accessory.name
+                            before = accessory.baselineQuantity.toString()
+                            after = accessory.returnQuantity?.toString() ?: ""
+                            note = accessory.note
+                        }, enabled = !vm.loading) { Text(tr("Edit")) }
+                        TextButton(onClick = { pendingDeleteId = accessory.id },
+                            enabled = !vm.loading) { Text(tr("Delete")) }
+                    }
+                }
+            }
+            item {
+                Text(tr(if (editingId == null) "Add accessory" else "Edit accessory"),
+                    fontSize = 19.sp, fontWeight = FontWeight.Bold)
+            }
+            item {
+                OutlinedTextField(name, { name = it.take(120) }, label = { Text(tr("Name")) },
+                    modifier = Modifier.fillMaxWidth(), singleLine = true)
+            }
+            item {
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(before, { before = it.filter(Char::isDigit).take(5) },
+                        label = { Text(tr("Initial quantity")) },
+                        modifier = Modifier.weight(1f), singleLine = true)
+                    OutlinedTextField(after, { after = it.filter(Char::isDigit).take(5) },
+                        label = { Text(tr("Return quantity")) },
+                        modifier = Modifier.weight(1f), singleLine = true)
+                }
+            }
+            item {
+                OutlinedTextField(note, { note = it.take(2000) },
+                    label = { Text(tr("Optional note")) }, modifier = Modifier.fillMaxWidth())
+            }
+            item {
+                if (editingId != null) {
+                    TextButton(onClick = resetDraft, enabled = !vm.loading) { Text(tr("Cancel editing")) }
+                }
+                PrimaryButton(if (editingId == null) "Save accessory" else "Save changes",
+                    enabled = valid && !vm.loading) {
+                    val first = firstQuantity ?: return@PrimaryButton
+                    val current = editingId
+                    if (current == null) vm.addAccessory(name, first, returnQuantity, note, resetDraft)
+                    else vm.editAccessory(current, name, first, returnQuantity, note, resetDraft)
+                }
+            }
         }
     }
+    val deleting = pendingDeleteId
+    if (deleting != null) AlertDialog(
+        onDismissRequest = { pendingDeleteId = null },
+        title = { Text(tr("Delete accessory?")) },
+        text = { Text(tr("This removes the accessory from this operation.")) },
+        confirmButton = {
+            TextButton(onClick = {
+                vm.deleteAccessory(deleting)
+                pendingDeleteId = null
+            }) { Text(tr("Delete")) }
+        },
+        dismissButton = {
+            TextButton(onClick = { pendingDeleteId = null }) { Text(tr("Cancel")) }
+        }
+    )
 }
 
 @Composable private fun ReportScreen(vm:HandoverViewModel) {
