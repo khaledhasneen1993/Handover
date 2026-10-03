@@ -43,12 +43,12 @@ class HandoverViewModel(app: Application, private val saved: SavedStateHandle): 
     var loading by androidx.compose.runtime.mutableStateOf(false)
     var error by androidx.compose.runtime.mutableStateOf<String?>(null)
     var lastReport by androidx.compose.runtime.mutableStateOf<File?>(null)
-    private fun setScreen(next:String) { screen=next;saved["screen"]=next;refresh++ }
-    private fun setPhase(value:String) { phase=value;saved["phase"]=value }
+    private fun navigateToScreen(next:String) { screen=next;saved["screen"]=next;refresh++ }
+    private fun choosePhase(value:String) { phase=value;saved["phase"]=value }
     private val stack get()=saved.get<ArrayList<String>>("screenStack") ?: arrayListOf()
     fun go(next:String) {
         if(next!=screen) { val previous=stack;previous.add(screen);saved["screenStack"]=previous }
-        setScreen(next)
+        navigateToScreen(next)
     }
     fun back() {
         if(screen=="HOME") return
@@ -56,16 +56,16 @@ class HandoverViewModel(app: Application, private val saved: SavedStateHandle): 
         val route=if(previous.isNotEmpty()) previous.removeAt(previous.lastIndex) else when(screen) {
             "CAMERA","REVIEW"->"SESSION";"SESSION"->"DETAIL";else->"HOME"
         }
-        saved["screenStack"]=previous;setScreen(route)
+        saved["screenStack"]=previous;navigateToScreen(route)
     }
     fun inspect(id:String) { inspectionId=id;saved["inspectionId"]=id;go("DETAIL") }
     fun session(p:String) {
-        if(p!=Phase.RETURN) { setPhase(p);go("SESSION");return }
+        if(p!=Phase.RETURN) { choosePhase(p);go("SESSION");return }
         task {
             if(repo.dao.session(inspectionId,Phase.BASELINE)?.completedAt==null) {
                 error="Complete the initial inspection before starting return";return@task
             }
-            setPhase(p);go("SESSION")
+            choosePhase(p);go("SESSION")
         }
     }
     fun camera(item:String) { itemId=item;saved["itemId"]=item;go("CAMERA") }
@@ -82,7 +82,7 @@ class HandoverViewModel(app: Application, private val saved: SavedStateHandle): 
     }
     fun create(title: String, category: String, context: String, role: String, rooms: List<String>) = task {
         inspectionId=repo.create(title,category,context,role,rooms)
-        saved["inspectionId"]=inspectionId;setPhase(Phase.BASELINE);go("SESSION")
+        saved["inspectionId"]=inspectionId;choosePhase(Phase.BASELINE);go("SESSION")
     }
     fun captured(temp:File,item:String) {
         if(loading) { temp.delete();return }
@@ -100,12 +100,12 @@ class HandoverViewModel(app: Application, private val saved: SavedStateHandle): 
         assetId=asset.id;saved["assetId"]=asset.id;go("REVIEW")
     }
     fun mark(item: String, status: String) = task {
-        repo.setStatus(item, repo.ensureSession(inspectionId, phase), status); screen = "SESSION"
+        repo.setStatus(item, repo.ensureSession(inspectionId, phase), status); navigateToScreen("SESSION")
     }
-    fun complete() = task { repo.complete(repo.ensureSession(inspectionId, phase)); screen = "DETAIL" }
+    fun complete() = task { repo.complete(repo.ensureSession(inspectionId, phase)); navigateToScreen("DETAIL") }
     fun addNote(item: String, asset: String, kind: String, detail: String, assessment: String) = task {
         repo.note(inspectionId, item, asset, kind, detail, assessment)
-        screen = "SESSION"
+        navigateToScreen("SESSION")
     }
     fun addAccessory(name: String, before: Int, after: Int?, note: String) = task { repo.addAccessory(inspectionId, name, before, after, note) }
     fun updatePair(pair: ComparisonPair, assessment: String) = task { repo.updateComparison(inspectionId, pair.returnAssetId, pair.baselineAssetId, assessment, pair.note) }
@@ -114,7 +114,7 @@ class HandoverViewModel(app: Application, private val saved: SavedStateHandle): 
     }
     fun makeReport(options: ReportMaker.Options) = task {
         lastReport = ReportMaker(getApplication(), repo).create(inspectionId, options)
-        screen = "REPORT_PREVIEW"
+        navigateToScreen("REPORT_PREVIEW")
     }
     fun exportAssetPackage(uri: Uri) = task {
         AssetPackageExporter(getApplication(), repo).export(inspectionId, uri)
