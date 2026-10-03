@@ -12,7 +12,7 @@ import androidx.compose.runtime.setValue
 import com.khaled.handover.HandoverApp
 import com.khaled.handover.data.*
 import com.khaled.handover.report.ReportMaker
-import com.khaled.handover.report.AssetPackageExporter
+import com.khaled.handover.export.AssetPackager
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -126,7 +126,7 @@ class HandoverViewModel(app: Application, private val saved: SavedStateHandle): 
         navigateToScreen("REPORT_PREVIEW")
     }
     fun exportAssetPackage(uri: Uri) = task {
-        AssetPackageExporter(getApplication(), repo).export(inspectionId, uri)
+        AssetPackager(getApplication(), repo).export(inspectionId, uri)
     }
     fun reportShareIntent(file: File): Intent {
         val ctx: Application = getApplication()
