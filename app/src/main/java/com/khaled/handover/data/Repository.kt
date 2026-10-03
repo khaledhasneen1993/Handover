@@ -16,6 +16,18 @@ class InspectionRepository(ctx: Context, val db: HandoverDb) {
     val dao = db.dao()
     val assets = AssetStore(ctx)
     val inspections: Flow<List<Inspection>> get() = dao.watchInspections()
+    /** Runs at startup, after journal recovery and before UI access; never removes referenced originals. */
+    suspend fun recoverOrphanOriginals() = withContext(Dispatchers.IO) {
+        val referenced=dao.allInspections().flatMap { inspection ->
+            dao.sessions(inspection.id).flatMap { dao.sessionMedia(it.id) }
+        }.mapTo(mutableSetOf()) { it.relativePath.substringAfterLast('/') }
+        val originals=File(assets.root,"originals")
+        val managed=Regex("[0-9a-f-]{36}\\.(jpg|png|webp|heic|part)")
+        originals.listFiles()?.forEach { file ->
+            if(file.isFile && managed.matches(file.name) && file.name !in referenced) file.delete()
+        }
+        assets.deleteTemps()
+    }
     private fun snapshot(specs: List<PointSpec>) = JSONArray().also { j -> specs.forEach { j.put(JSONObject().put("key",it.key).put("group",it.group).put("label",it.label).put("hint",it.hint)) } }.toString()
 
     suspend fun create(title: String, category: String, context: String, role: String, rooms: List<String> = emptyList()): String {
@@ -124,9 +136,33 @@ class InspectionRepository(ctx: Context, val db: HandoverDb) {
         }
     }
     suspend fun addAccessory(id: String, name: String, first: Int, second: Int?, note: String) = db.withTransaction {
-        require(first >= 0 && (second == null || second >= 0))
+        require(name.trim().length in 1..120) { "Accessory name must have 1–120 characters" }
+        require(first in 0..10_000 && (second == null || second in 0..10_000)) { "Quantity must be between 0 and 10,000" }
+        require(note.length <= 2_000) { "Accessory note is too long" }
         dao.insertAccessory(Accessory(newId(), id, name.trim(), first, second, note))
         recordChange(id, null, "ACCESSORY_ADDED")
+    }
+    /** Update the same accessory row at return; it remains attached to its original operation. */
+    suspend fun editAccessory(inspectionId: String, accessoryId: String, name: String,
+                              first: Int, second: Int?, note: String) = db.withTransaction {
+        val cleaned = name.trim()
+        require(cleaned.length in 1..120) { "Accessory name must have 1–120 characters" }
+        require(first in 0..10_000 && (second == null || second in 0..10_000)) {
+            "Quantity must be between 0 and 10,000"
+        }
+        require(note.length <= 2_000) { "Accessory note is too long" }
+        val current = dao.accessories(inspectionId).firstOrNull { it.id == accessoryId }
+            ?: error("Accessory not found in this operation")
+        dao.updateAccessory(current.copy(name = cleaned, baselineQuantity = first,
+            returnQuantity = second, note = note))
+        recordChange(inspectionId, null, "ACCESSORY_UPDATED")
+    }
+    suspend fun removeAccessory(inspectionId: String, accessoryId: String) = db.withTransaction {
+        require(dao.accessories(inspectionId).any { it.id == accessoryId }) {
+            "Accessory not found in this operation"
+        }
+        require(dao.deleteAccessory(accessoryId) == 1) { "Accessory could not be deleted" }
+        recordChange(inspectionId, null, "ACCESSORY_DELETED")
     }
     suspend fun updateDue(id: String, dueAt: Long?, leadMinutes: Int?) = db.withTransaction {
         require(leadMinutes == null || leadMinutes in 0..10080)

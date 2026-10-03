@@ -10,6 +10,8 @@ import android.os.ParcelFileDescriptor
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.*
+import androidx.activity.compose.BackHandler
+import kotlinx.coroutines.CancellationException
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -18,6 +20,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.*
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
@@ -92,9 +95,17 @@ private val normal = 15.sp
 @Composable
 fun HandoverScreen(vm: HandoverViewModel) {
     val context = LocalContext.current
-    val all by vm.inspections.collectAsState()
     val snackbar = remember { SnackbarHostState() }
     LaunchedEffect(vm.error) { vm.error?.let { snackbar.showSnackbar(it); vm.error = null } }
+    BackHandler(vm.recoveryReady && vm.screen != "HOME") { vm.back() }
+    if (!vm.recoveryReady) {
+        Box(Modifier.fillMaxSize(),contentAlignment=Alignment.Center) {
+            if(vm.recoveryError!=null) Text("Unable to recover saved data: ${vm.recoveryError}",color=MaterialTheme.colorScheme.error)
+            else CircularProgressIndicator()
+        }
+        return
+    }
+    val all by vm.inspections.collectAsState()
     Scaffold(
         snackbarHost = { SnackbarHost(snackbar) },
         bottomBar = { if (vm.screen in listOf("HOME", "ARCHIVE", "SETTINGS")) {
@@ -154,21 +165,44 @@ fun HandoverScreen(vm: HandoverViewModel) {
     }
 }
 /** Decode preview images off the UI thread. Never open full-resolution originals for cards. */
-@Composable private fun Thumb(file: File?, modifier: Modifier = Modifier, contentDescription: String = "Documented photo", alpha: Float = 1f) {
-    val image by produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, file?.path, file?.lastModified()) {
+/** Decode off the UI thread; a missing generated thumbnail is recreated only from a
+ * verified original, never from a persisted thumbnail destination. */
+@Composable private fun Thumb(file: File?, modifier: Modifier = Modifier,
+    contentDescription: String = "Documented photo", alpha: Float = 1f) {
+    val app = LocalContext.current.applicationContext as? com.khaled.handover.HandoverApp
+    val image by produceState<androidx.compose.ui.graphics.ImageBitmap?>(null,
+        file?.path, file?.lastModified()) {
         value = withContext(Dispatchers.IO) {
-            if (file?.isFile != true) null else try {
-                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                BitmapFactory.decodeFile(file.path, bounds)
-                val options = BitmapFactory.Options().apply {
-                    inSampleSize = boundedSampleSize(bounds.outWidth, bounds.outHeight, 1000)
+            if (file == null) null else {
+                val store = app?.repository?.assets
+                if (store != null && (!file.isFile || file.length() == 0L)) {
+                    val id = file.nameWithoutExtension
+                    if (com.khaled.handover.backup.RestoreAdmission.validUuid(id) &&
+                        file.canonicalFile == store.resolve(
+                            com.khaled.handover.backup.RestoreAdmission.thumbnailFor(id))) {
+                        val record = app.repository.dao.mediaById(id)
+                        if (record != null) runCatching { store.rebuildThumbnail(record) }
+                    }
                 }
-                BitmapFactory.decodeFile(file.path, options)?.asImageBitmap()
-            } catch (_: Exception) { null }
+                if (!file.isFile) null else try {
+                    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    BitmapFactory.decodeFile(file.path, bounds)
+                    val options = BitmapFactory.Options().apply {
+                        inSampleSize = boundedSampleSize(bounds.outWidth, bounds.outHeight, 1000)
+                    }
+                    BitmapFactory.decodeFile(file.path, options)?.asImageBitmap()
+                } catch (_: Exception) { null }
+            }
         }
     }
-    if (image != null) Image(image!!, contentDescription, modifier.alpha(alpha).clip(RoundedCornerShape(16.dp)), contentScale=ContentScale.Fit)
-    else Box(modifier.clip(RoundedCornerShape(16.dp)).background(MaterialTheme.colorScheme.surfaceVariant), contentAlignment=Alignment.Center) { Icon(Icons.Default.PhotoCamera, "No photograph yet", Modifier.size(35.dp)) }
+    if (image != null) Image(image!!, contentDescription,
+        modifier.alpha(alpha).clip(RoundedCornerShape(16.dp)),
+        contentScale = ContentScale.Fit)
+    else Box(modifier.clip(RoundedCornerShape(16.dp))
+        .background(MaterialTheme.colorScheme.surfaceVariant),
+        contentAlignment = Alignment.Center) {
+        Icon(Icons.Default.PhotoCamera, "No photograph yet", Modifier.size(35.dp))
+    }
 }
 
 @Composable private fun HomeScreen(vm: HandoverViewModel, inspections: List<Inspection>, archived: Boolean=false) {
@@ -337,7 +371,15 @@ private data class InspectionContent(val inspection: Inspection?, val items: Lis
                     }},modifier=Modifier.fillMaxWidth()) { Text(tr("Archive operation")) } }
                     item { TextButton(onClick={confirmDelete=true},modifier=Modifier.fillMaxWidth()) {Text("Delete operation",color=MaterialTheme.colorScheme.error)} }
                 }
-                "FIRST", "RETURN" -> item { LaunchedScreenLink(if(tab=="FIRST") "Initial condition" else "Return condition") { vm.session(if(tab=="FIRST")Phase.BASELINE else Phase.RETURN) } }
+                "FIRST", "RETURN" -> item {
+                    val returning=tab=="RETURN"
+                    PrimaryButton(if(returning)"Return condition" else "Initial condition",
+                        enabled=!returning || first?.completedAt!=null) {
+                        vm.session(if(returning)Phase.RETURN else Phase.BASELINE)
+                    }
+                    if(returning && first?.completedAt==null)
+                        Text("Complete initial condition first",color=MaterialTheme.colorScheme.error)
+                }
                 "COMPARE" -> item { LaunchedScreenLink("View comparisons") {vm.go("COMPARISON")} }
                 "REPORTS" -> item { LaunchedScreenLink("Create a report") {vm.go("REPORT")} }
             }
@@ -346,36 +388,64 @@ private data class InspectionContent(val inspection: Inspection?, val items: Lis
 }
 
 @Composable private fun ReminderEditor(vm:HandoverViewModel, inspection:Inspection) {
-    val context=LocalContext.current
-    var pendingDue by remember { mutableStateOf<Long?>(null) }
-    var lead by remember { mutableIntStateOf(inspection.reminderLeadMinutes ?: 60) }
-    val notifications=rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if(granted) pendingDue?.let {due->com.khaled.handover.reminders.ReminderScheduler.schedule(context,inspection.id,due,lead)}
+    val context = LocalContext.current
+    var pendingDue by rememberSaveable { mutableStateOf<Long?>(null) }
+    var lead by rememberSaveable { mutableIntStateOf(inspection.reminderLeadMinutes ?: 60) }
+    var pendingLead by rememberSaveable { mutableIntStateOf(lead) }
+    val scheduler = com.khaled.handover.reminders.ReminderScheduler
+    val notifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        val due = pendingDue
+        if (granted && due != null) vm.task {
+            // A permission callback can arrive after recreation or after the date was changed.
+            val saved = vm.repo.dao.getInspection(inspection.id)
+            if (saved?.dueAt == due && saved.reminderLeadMinutes == pendingLead)
+                scheduler.schedule(context, inspection.id, due, pendingLead)
+            pendingDue = null
+        } else {
+            pendingDue = null
+            if (!granted) vm.error = "Return date saved, but notifications were not permitted"
+        }
     }
     fun chooseDate() {
-        val calendar=java.util.Calendar.getInstance()
-        android.app.DatePickerDialog(context,{_,year,month,day->
-            android.app.TimePickerDialog(context,{_,hour,minute->
-                calendar.set(year,month,day,hour,minute);calendar.set(java.util.Calendar.SECOND,0)
-                val due=calendar.timeInMillis;pendingDue=due
-                vm.task {vm.repo.updateDue(inspection.id,due,lead)}
-                if (android.os.Build.VERSION.SDK_INT>=33 && ContextCompat.checkSelfPermission(context,Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED)
-                    notifications.launch(Manifest.permission.POST_NOTIFICATIONS)
-                else com.khaled.handover.reminders.ReminderScheduler.schedule(context,inspection.id,due,lead)
-            },calendar.get(java.util.Calendar.HOUR_OF_DAY),calendar.get(java.util.Calendar.MINUTE),false).show()
-        },calendar.get(java.util.Calendar.YEAR),calendar.get(java.util.Calendar.MONTH),calendar.get(java.util.Calendar.DAY_OF_MONTH)).show()
+        val calendar = java.util.Calendar.getInstance()
+        android.app.DatePickerDialog(context, { _, year, month, day ->
+            android.app.TimePickerDialog(context, { _, hour, minute ->
+                calendar.set(year, month, day, hour, minute)
+                calendar.set(java.util.Calendar.SECOND, 0)
+                val due = calendar.timeInMillis
+                val chosenLead = lead
+                vm.task {
+                    // The notification is never scheduled before the Room transaction succeeds.
+                    vm.repo.updateDue(inspection.id, due, chosenLead)
+                    if (android.os.Build.VERSION.SDK_INT >= 33 &&
+                        ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                        pendingDue = due
+                        pendingLead = chosenLead
+                        notifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    } else scheduler.schedule(context, inspection.id, due, chosenLead)
+                }
+            }, calendar.get(java.util.Calendar.HOUR_OF_DAY), calendar.get(java.util.Calendar.MINUTE), false).show()
+        }, calendar.get(java.util.Calendar.YEAR), calendar.get(java.util.Calendar.MONTH), calendar.get(java.util.Calendar.DAY_OF_MONTH)).show()
     }
+    val finished = inspection.status == Progress.RETURN_DONE || inspection.status == Progress.ARCHIVED
     AppCard(Modifier.fillMaxWidth()) {
-        Text("Return reminder",fontWeight=FontWeight.Bold,fontSize=17.sp)
-        Text(inspection.dueAt?.let{DateFormat.getDateTimeInstance().format(Date(it))}?:"Not scheduled",fontSize=13.sp)
-        Text("Remind me before",fontSize=13.sp)
-        SingleChoiceRow(listOf("60","360","1440","2880"),lead.toString()) {lead=it.toInt()}
-        PrimaryButton("Set return date & reminder") {chooseDate()}
-        if(inspection.dueAt!=null) TextButton(onClick={
-            com.khaled.handover.reminders.ReminderScheduler.cancel(context,inspection.id)
-            vm.task {vm.repo.updateDue(inspection.id,null,null)}
-        }){Text("Cancel reminder")}
-        Text("Organizational, non-exact local reminder; notifications require permission.",fontSize=12.sp)
+        Text("Return reminder", fontWeight = FontWeight.Bold, fontSize = 17.sp)
+        Text(inspection.dueAt?.let { DateFormat.getDateTimeInstance().format(Date(it)) } ?: "Not scheduled", fontSize = 13.sp)
+        Text("Remind me before", fontSize = 13.sp)
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf(60 to "1 hour", 360 to "6 hours", 1440 to "1 day", 2880 to "2 days").forEach { (minutes,label) ->
+                FilterChip(selected = lead == minutes, onClick = { lead = minutes }, label = { Text(label) })
+            }
+        }
+        PrimaryButton("Set return date & reminder", enabled = !finished) { chooseDate() }
+        if (finished) Text("Return already completed or archived; no further reminder will be sent", fontSize = 12.sp)
+        if (inspection.dueAt != null) TextButton(onClick = {
+            vm.task {
+                vm.repo.updateDue(inspection.id, null, null)
+                scheduler.cancel(context, inspection.id)
+            }
+        }) { Text("Cancel reminder") }
+        Text("Local, non-exact reminder. Notifications require permission.", fontSize = 12.sp)
     }
 }
 
@@ -391,9 +461,17 @@ private data class InspectionContent(val inspection: Inspection?, val items: Lis
 private data class SessionContent(val session: CaptureSession?, val items:List<ChecklistItem>,val states:Map<String,ItemSessionState>,val media:Map<String,List<MediaAsset>>)
 @Composable private fun SessionScreen(vm:HandoverViewModel) {
     val info by produceState(SessionContent(null,emptyList(),emptyMap(),emptyMap()),vm.inspectionId,vm.phase,vm.refresh) {
-        val s=vm.repo.ensureSession(vm.inspectionId,vm.phase); val d=vm.repo.dao
-        val items=d.items(vm.inspectionId); val states=d.states(s.id).associateBy {it.itemId}
-        value=SessionContent(s,items,states,items.associate{it.id to d.itemMedia(it.id,s.id)})
+        try {
+            val session=vm.repo.ensureSession(vm.inspectionId,vm.phase)
+            val d=vm.repo.dao
+            val items=d.items(vm.inspectionId)
+            val states=d.states(session.id).associateBy {it.itemId}
+            value=SessionContent(session,items,states,items.associate {it.id to d.itemMedia(it.id,session.id)})
+        } catch(cancelled:CancellationException) { throw cancelled }
+        catch(failure:Exception) {
+            vm.error=failure.message ?: "Cannot open session"
+            vm.go("DETAIL")
+        }
     }
     val session=info.session
     if(session==null){ Box(Modifier.fillMaxSize(),contentAlignment=Alignment.Center){CircularProgressIndicator()};return }
@@ -590,30 +668,97 @@ private data class SessionContent(val session: CaptureSession?, val items:List<C
     }
 }
 
-@Composable private fun AccessoriesScreen(vm:HandoverViewModel) {
-    val list by produceState(emptyList<Accessory>(),vm.inspectionId,vm.refresh){value=vm.repo.dao.accessories(vm.inspectionId)}
-    var name by remember{mutableStateOf("")};var before by remember{mutableStateOf("1")};var after by remember{mutableStateOf("")};var note by remember{mutableStateOf("")}
+@Composable private fun AccessoriesScreen(vm: HandoverViewModel) {
+    val list by produceState(emptyList<Accessory>(), vm.inspectionId, vm.refresh) {
+        value = vm.repo.dao.accessories(vm.inspectionId)
+    }
+    var editingId by rememberSaveable { mutableStateOf<String?>(null) }
+    var pendingDeleteId by remember { mutableStateOf<String?>(null) }
+    var name by rememberSaveable { mutableStateOf("") }
+    var before by rememberSaveable { mutableStateOf("1") }
+    var after by rememberSaveable { mutableStateOf("") }
+    var note by rememberSaveable { mutableStateOf("") }
+    val firstQuantity = before.toIntOrNull()
+    val returnQuantity = if (after.isBlank()) null else after.toIntOrNull()
+    val valid = name.trim().length in 1..120 && firstQuantity != null &&
+        firstQuantity in 0..10_000 && (after.isBlank() || returnQuantity != null &&
+        returnQuantity in 0..10_000) && note.length <= 2000
+    val resetDraft = {
+        editingId = null; name = ""; before = "1"; after = ""; note = ""
+    }
     Column(Modifier.fillMaxSize()) {
-        Header("Accessories",{vm.go("DETAIL")})
-        LazyColumn(Modifier.weight(1f),contentPadding=PaddingValues(18.dp),verticalArrangement=Arrangement.spacedBy(14.dp)) {
-            items(list){accessory-> AppCard(Modifier.fillMaxWidth()){
-                Text(accessory.name,fontWeight=FontWeight.Bold)
-                Text("Initial: ${accessory.baselineQuantity}  ·  Return: ${accessory.returnQuantity?.toString() ?: "Not recorded"}")
-                if(accessory.note.isNotBlank())Text(accessory.note)
-            }}
-            item { Text(tr("Add accessory"),fontSize=19.sp,fontWeight=FontWeight.Bold) }
-            item { OutlinedTextField(name,{name=it},label={Text(tr("Name"))},modifier=Modifier.fillMaxWidth()) }
-            item { Row(horizontalArrangement=Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(before,{before=it.filter(Char::isDigit)},label={Text(tr("Initial quantity"))},modifier=Modifier.weight(1f),singleLine=true)
-                OutlinedTextField(after,{after=it.filter(Char::isDigit)},label={Text(tr("Return quantity"))},modifier=Modifier.weight(1f),singleLine=true)
-            } }
-            item { OutlinedTextField(note,{note=it},label={Text(tr("Optional note"))},modifier=Modifier.fillMaxWidth()) }
-            item { PrimaryButton("Save accessory",enabled=name.isNotBlank()&&before.toIntOrNull()!=null) {
-                vm.addAccessory(name,before.toInt(),after.toIntOrNull(),note)
-                name="";before="1";after="";note=""
-            } }
+        Header("Accessories", { vm.go("DETAIL") })
+        LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            items(list, key = { it.id }) { accessory ->
+                AppCard(Modifier.fillMaxWidth()) {
+                    Text(accessory.name, fontWeight = FontWeight.Bold)
+                    Text("Initial: ${accessory.baselineQuantity} · Return: ${accessory.returnQuantity?.toString() ?: "Not recorded"}")
+                    if (accessory.note.isNotBlank()) Text(accessory.note)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = {
+                            editingId = accessory.id
+                            name = accessory.name
+                            before = accessory.baselineQuantity.toString()
+                            after = accessory.returnQuantity?.toString() ?: ""
+                            note = accessory.note
+                        }, enabled = !vm.loading) { Text(tr("Edit")) }
+                        TextButton(onClick = { pendingDeleteId = accessory.id },
+                            enabled = !vm.loading) { Text(tr("Delete")) }
+                    }
+                }
+            }
+            item {
+                Text(tr(if (editingId == null) "Add accessory" else "Edit accessory"),
+                    fontSize = 19.sp, fontWeight = FontWeight.Bold)
+            }
+            item {
+                OutlinedTextField(name, { name = it.take(120) }, label = { Text(tr("Name")) },
+                    modifier = Modifier.fillMaxWidth(), singleLine = true)
+            }
+            item {
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(before, { before = it.filter(Char::isDigit).take(5) },
+                        label = { Text(tr("Initial quantity")) },
+                        modifier = Modifier.weight(1f), singleLine = true)
+                    OutlinedTextField(after, { after = it.filter(Char::isDigit).take(5) },
+                        label = { Text(tr("Return quantity")) },
+                        modifier = Modifier.weight(1f), singleLine = true)
+                }
+            }
+            item {
+                OutlinedTextField(note, { note = it.take(2000) },
+                    label = { Text(tr("Optional note")) }, modifier = Modifier.fillMaxWidth())
+            }
+            item {
+                if (editingId != null) {
+                    TextButton(onClick = resetDraft, enabled = !vm.loading) { Text(tr("Cancel editing")) }
+                }
+                PrimaryButton(if (editingId == null) "Save accessory" else "Save changes",
+                    enabled = valid && !vm.loading) {
+                    val first = firstQuantity ?: return@PrimaryButton
+                    val current = editingId
+                    if (current == null) vm.addAccessory(name, first, returnQuantity, note, resetDraft)
+                    else vm.editAccessory(current, name, first, returnQuantity, note, resetDraft)
+                }
+            }
         }
     }
+    val deleting = pendingDeleteId
+    if (deleting != null) AlertDialog(
+        onDismissRequest = { pendingDeleteId = null },
+        title = { Text(tr("Delete accessory?")) },
+        text = { Text(tr("This removes the accessory from this operation.")) },
+        confirmButton = {
+            TextButton(onClick = {
+                vm.deleteAccessory(deleting)
+                pendingDeleteId = null
+            }) { Text(tr("Delete")) }
+        },
+        dismissButton = {
+            TextButton(onClick = { pendingDeleteId = null }) { Text(tr("Cancel")) }
+        }
+    )
 }
 
 @Composable private fun ReportScreen(vm:HandoverViewModel) {
@@ -732,7 +877,7 @@ private data class SessionContent(val session: CaptureSession?, val items:List<C
                 Text(tr("Storage"),fontWeight=FontWeight.Bold)
                 Text("Originals: ${(context.filesDir.resolve("originals").listFiles()?.sumOf{it.length()}?:0L)/1024/1024} MB",fontSize=13.sp)
                 Text("Derived thumbnails: ${vm.repo.assets.derivedBytes()/1024/1024} MB",fontSize=13.sp)
-                OutlinedButton(onClick={vm.repo.assets.clearThumbnails()}) {Text(tr("Clear generated thumbnails"))}
+                OutlinedButton(onClick={vm.task { withContext(Dispatchers.IO) { vm.repo.assets.clearThumbnails() } }}, enabled=!vm.loading) {Text(tr("Clear generated thumbnails"))}
                 Text(tr("If you uninstall the app without exporting a backup, its local data may be lost."),fontSize=12.sp)
             }}
         }

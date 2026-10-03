@@ -115,13 +115,55 @@ class BackupManager(private val context: Context, private val repo: InspectionRe
         } finally { password?.fill('\u0000');zip.delete();output.delete() }
     }
     private fun sha(bytes:ByteArray) = java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString(""){"%02x".format(it)}
+    private val journalFile: File get() = File(context.filesDir, "restore-journal.json")
+    private fun persistJournal(value: JSONObject) {
+        val temp = File(context.filesDir, "restore-journal.part")
+        FileOutputStream(temp).use { out ->
+            out.write(value.toString().toByteArray(Charsets.UTF_8))
+            out.fd.sync()
+        }
+        require(temp.renameTo(journalFile)) { "Cannot persist restore journal" }
+    }
+    /** Must finish before the app displays any restored records or accepts a new restore. */
+    /** Remove only orphaned cache objects from a previous process; never sweep originals or exports. */
+    private fun cleanupAbandonedRestoreTemps() {
+        val cacheRoot = context.cacheDir.canonicalFile
+        cacheRoot.listFiles()?.forEach { entry ->
+            val directChild = runCatching { entry.canonicalFile.parentFile == cacheRoot }.getOrDefault(false)
+            if (!directChild) return@forEach
+            when {
+                RestoreScratchPolicy.isStage(entry.name) && entry.isDirectory -> entry.deleteRecursively()
+                RestoreScratchPolicy.isScratch(entry.name) && entry.isFile -> entry.delete()
+            }
+        }
+    }
+
+    suspend fun recoverInterruptedRestore() = withContext(Dispatchers.IO) {
+        if (!journalFile.exists()) { cleanupAbandonedRestoreTemps(); return@withContext }
+        val log = JSONObject(journalFile.readText())
+        // SQLite either committed the complete restore transaction or rolled it back.
+        if (repo.dao.allInspections().isEmpty()) {
+            val paths = log.getJSONArray("paths")
+            for (i in 0 until paths.length()) {
+                val path = paths.getString(i)
+                require(ArchivePolicy.accepts(path) && path !in setOf("manifest.json","data.json"))
+                repo.assets.resolve(path).delete()
+            }
+        }
+        log.optString("stagingName").takeIf { it.matches(Regex("restore-[0-9a-f-]{36}")) }
+            ?.let { File(context.cacheDir,it).deleteRecursively() }
+        journalFile.delete()
+        cleanupAbandonedRestoreTemps()
+    }
     suspend fun restore(uri: Uri, password: CharArray? = null) = withContext(Dispatchers.IO) {
         // Restore is intentionally create-only: an existing database is never overwritten or silently merged.
+        require(!journalFile.exists()) { "Finish recovering an interrupted restore before retrying" }
         require(repo.dao.allInspections().isEmpty()) { "Restore requires a fresh empty app. Export existing operations first." }
         val incoming=File.createTempFile("handover-incoming-",".bak",context.cacheDir)
         val clear=File.createTempFile("handover-decrypted-",".zip",context.cacheDir)
         val stage=File(context.cacheDir,"restore-${java.util.UUID.randomUUID()}").also{it.mkdirs()}
         val moved=mutableListOf<File>()
+        var databaseCommitted=false
         try {
             context.contentResolver.openInputStream(uri)?.use { src ->
                 incoming.outputStream().use { out ->
@@ -180,24 +222,84 @@ class BackupManager(private val context: Context, private val repo: InspectionRe
             val tables=payload.getJSONObject("tables")
             // No extra tables, columns or executable SQL from untrusted archives.
             require(tables.keys().asSequence().toSet()==TABLES.toSet())
+            // Reject hostile metadata BEFORE moving files or writing any database row.
             val savedMedia=tables.getJSONArray("media")
-            require(savedMedia.length()<=MAX_FILES)
-            for(i in 0 until savedMedia.length()){
-                val r=savedMedia.getJSONObject(i);require(actual.containsKey(r.getString("relativePath")))
-                require(actual[r.getString("relativePath")]!!.second==r.getString("sha256"))
-            }
             val savedReports=tables.getJSONArray("reports")
-            for (i in 0 until savedReports.length()) {
-                val name=savedReports.getJSONObject(i).getString("relativePath")
-                require(name.matches(Regex("exports/[0-9a-f-]{36}\\.pdf")) && actual.containsKey(name)) { "Missing exported PDF" }
+            val originals=(0 until savedMedia.length()).map { index ->
+                val row=savedMedia.getJSONObject(index)
+                RestorableMedia(row.getString("id"),row.getString("sessionId"),row.getString("itemId"),
+                    row.getString("relativePath"),row.optString("thumbnailPath",null),
+                    row.getString("mimeType"),row.getLong("size"),row.getInt("width"),row.getInt("height"),row.getString("sha256"))
             }
-            val managedPaths = buildList {
-                for (i in 0 until savedMedia.length()) add(savedMedia.getJSONObject(i).getString("relativePath"))
-                for (i in 0 until savedReports.length()) add(savedReports.getJSONObject(i).getString("relativePath"))
+            val reportPaths=(0 until savedReports.length()).map { savedReports.getJSONObject(it).getString("relativePath") }
+            RestoreAdmission.validateReferencedAssets(originals,reportPaths,actual.mapValues { BackupEntryDigest(it.value.first,it.value.second) })
+            val knownIds=mutableMapOf<String,Set<String>>()
+            for(table in TABLES) {
+                val allowed=mutableSetOf<String>()
+                repo.db.openHelper.readableDatabase.query("PRAGMA table_info($table)").use { cursor ->
+                    val col=cursor.getColumnIndexOrThrow("name")
+                    while(cursor.moveToNext()) allowed.add(cursor.getString(col))
+                }
+                val rows=tables.getJSONArray(table)
+                require(rows.length()<=MAX_FILES) { "Too many database rows" }
+                val ids=mutableSetOf<String>()
+                for(i in 0 until rows.length()) {
+                    val row=rows.getJSONObject(i)
+                    val fields=row.keys().asSequence().toList()
+                    require(fields.isNotEmpty() && fields.all { it in allowed }) { "Unknown database columns" }
+                    if("id" in allowed) {
+                        val id=row.getString("id")
+                        require(RestoreAdmission.validUuid(id) && ids.add(id)) { "Invalid/duplicate row ID" }
+                    }
+                }
+                if("id" in allowed) knownIds[table]=ids
             }
-            require(managedPaths.size == managedPaths.toSet().size) { "Duplicate asset path" }
-            val movingBytes = managedPaths.sumOf { actual[it]?.first ?: error("Missing asset") }
-            require(repo.assets.root.usableSpace > movingBytes + 16_777_216L) {"Not enough free storage to safely restore"}
+            fun requireReference(table:String,column:String,parent:String) {
+                val rows=tables.getJSONArray(table)
+                for(i in 0 until rows.length()) require(rows.getJSONObject(i).getString(column) in knownIds.getValue(parent)) {
+                    "Broken database relationship"
+                }
+            }
+            for(table in listOf("template_snapshots","sessions","checklist","accessories","reports","revision_events","observations"))
+                requireReference(table,"inspectionId","inspections")
+            requireReference("item_states","itemId","checklist")
+            requireReference("item_states","sessionId","sessions")
+            requireReference("media","itemId","checklist")
+            requireReference("media","sessionId","sessions")
+            requireReference("annotations","assetId","media")
+            requireReference("comparison_pairs","baselineAssetId","media")
+            requireReference("comparison_pairs","returnAssetId","media")
+            val sessions=tables.getJSONArray("sessions")
+            val sessionOwner=(0 until sessions.length()).associate { val x=sessions.getJSONObject(it);x.getString("id") to x.getString("inspectionId") }
+            val sessionPhase=(0 until sessions.length()).associate { val x=sessions.getJSONObject(it);x.getString("id") to x.getString("phase") }
+            val items=tables.getJSONArray("checklist")
+            val itemOwner=(0 until items.length()).associate { val x=items.getJSONObject(it);x.getString("id") to x.getString("inspectionId") }
+            originals.forEach { require(sessionOwner[it.sessionId]==itemOwner[it.itemId]) { "Image crosses inspection boundaries" } }
+            val states=tables.getJSONArray("item_states")
+            for(i in 0 until states.length()) {
+                val x=states.getJSONObject(i)
+                require(sessionOwner[x.getString("sessionId")]==itemOwner[x.getString("itemId")]) { "Invalid point state" }
+            }
+            val mediaById=originals.associateBy { it.id }
+            val pairs=tables.getJSONArray("comparison_pairs")
+            for(i in 0 until pairs.length()) {
+                val x=pairs.getJSONObject(i)
+                val first=mediaById.getValue(x.getString("baselineAssetId"))
+                val returning=mediaById.getValue(x.getString("returnAssetId"))
+                require(first.itemId==returning.itemId && sessionPhase[first.sessionId]=="BASELINE" &&
+                    sessionPhase[returning.sessionId]=="RETURN") { "Invalid before/after match" }
+            }
+            for(asset in originals) {
+                val file=File(stage,asset.originalPath)
+                val image=android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds=true }
+                android.graphics.BitmapFactory.decodeFile(file.path,image)
+                require(image.outWidth==asset.width && image.outHeight==asset.height) { "Photo metadata differs from original" }
+            }
+            val managedPaths=originals.map { it.originalPath }+reportPaths
+            require(managedPaths.all { !repo.assets.resolve(it).exists() }) { "Existing original would be overwritten" }
+            val movingBytes=managedPaths.sumOf { actual.getValue(it).first }
+            require(repo.assets.root.usableSpace>=movingBytes+64_000_000L) { "Not enough storage to restore safely" }
+            persistJournal(JSONObject().put("phase","MOVING").put("stagingName",stage.name).put("paths",JSONArray(managedPaths)))
             for (path in managedPaths) {
                 val to=repo.assets.resolve(path)
                 require(!to.exists()) { "Restore would replace an existing file" }
@@ -221,6 +323,8 @@ class BackupManager(private val context: Context, private val repo: InspectionRe
                     }
                 }
             }
+            databaseCommitted=true
+            persistJournal(JSONObject().put("phase","COMMITTED").put("stagingName",stage.name).put("paths",JSONArray(managedPaths)))
             repo.db.invalidationTracker.refreshAsync()
             // Derived thumbnails can always be rebuilt without touching original bytes.
             for(i in 0 until savedMedia.length()){
@@ -228,7 +332,13 @@ class BackupManager(private val context: Context, private val repo: InspectionRe
                 val record=repo.dao.mediaById(r.getString("id")) ?: continue
                 try {repo.assets.rebuildThumbnail(record)}catch (_:Exception){}
             }
-        } catch(t:Throwable){moved.forEach{it.delete()};throw t}
-        finally{password?.fill('\u0000'); incoming.delete();clear.delete();stage.deleteRecursively()}
+        } catch(t:Throwable) {
+            if (!databaseCommitted) moved.forEach { it.delete() }
+            throw t
+        } finally {
+            password?.fill('\u0000')
+            incoming.delete();clear.delete();stage.deleteRecursively()
+            if (databaseCommitted || moved.all { !it.exists() }) journalFile.delete()
+        }
     }
 }

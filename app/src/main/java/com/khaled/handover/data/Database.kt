@@ -78,6 +78,7 @@ data class RevisionEvent(@PrimaryKey val id: String, val inspectionId: String, v
     @Query("SELECT * FROM accessories WHERE inspectionId=:id ORDER BY name") suspend fun accessories(id: String): List<Accessory>
     @Insert suspend fun insertAccessory(x: Accessory)
     @Update suspend fun updateAccessory(x: Accessory)
+    @Query("DELETE FROM accessories WHERE id=:id") suspend fun deleteAccessory(id: String): Int
     @Insert suspend fun insertAnnotation(x: Annotation)
     @Query("SELECT * FROM annotations WHERE assetId=:id") suspend fun annotations(id: String): List<Annotation>
     @Insert suspend fun insertObservation(x: Observation)

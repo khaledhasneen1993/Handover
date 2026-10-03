@@ -10,6 +10,7 @@ import androidx.exifinterface.media.ExifInterface
 import com.khaled.handover.data.MediaAsset
 import com.khaled.handover.data.newId
 import com.khaled.handover.data.boundedSampleSize
+import com.khaled.handover.backup.RestoreAdmission
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -110,9 +111,22 @@ class AssetStore(private val ctx: Context) {
         return digest.digest().joinToString("") { "%02x".format(it) }
     }
     fun verify(asset: MediaAsset): Boolean = resolve(asset.relativePath).let { it.isFile && it.length() == asset.size && sha256(it) == asset.sha256 }
+    /** Never write to a thumbnailPath read from a backup or old database row. */
     fun rebuildThumbnail(asset: MediaAsset) {
+        val target = resolve(RestoreAdmission.thumbnailFor(asset.id))
+        require(target.parentFile?.canonicalFile == thumbnails.canonicalFile) { "Unsafe thumbnail destination" }
         val original = resolve(asset.relativePath)
-        if (original.isFile) createThumbnail(original, resolve(asset.thumbnailPath))
+        require(original.parentFile?.canonicalFile == originals.canonicalFile) { "Unsafe original directory" }
+        if (original.isFile && original.length() == asset.size && sha256(original) == asset.sha256) {
+            val temporary = File(thumbnails, "${asset.id}.part")
+            try {
+                createThumbnail(original, temporary)
+                if (temporary.isFile) {
+                    if (target.exists()) require(target.delete()) { "Cannot replace thumbnail" }
+                    require(temporary.renameTo(target)) { "Cannot finalize thumbnail" }
+                }
+            } finally { temporary.delete() }
+        }
     }
     fun derivedBytes(): Long = thumbnails.listFiles()?.sumOf { it.length() } ?: 0
     fun clearThumbnails() { thumbnails.listFiles()?.forEach { it.delete() } }
