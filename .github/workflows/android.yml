@@ -37,7 +37,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          gradle --no-daemon :app:assembleDebug :app:bundleRelease :app:lintDebug :app:testDebugUnitTest > "$RUNNER_TEMP/handover-build.log" 2>&1
+          gradle --no-daemon --no-build-cache --max-workers=1 clean :app:assembleDebug :app:bundleRelease :app:lintDebug :app:testDebugUnitTest > "$RUNNER_TEMP/handover-build.log" 2>&1
           code=$?
           cat "$RUNNER_TEMP/handover-build.log"
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
