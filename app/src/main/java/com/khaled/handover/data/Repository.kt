@@ -136,9 +136,33 @@ class InspectionRepository(ctx: Context, val db: HandoverDb) {
         }
     }
     suspend fun addAccessory(id: String, name: String, first: Int, second: Int?, note: String) = db.withTransaction {
-        require(first >= 0 && (second == null || second >= 0))
+        require(name.trim().length in 1..120) { "Accessory name must have 1–120 characters" }
+        require(first in 0..10_000 && (second == null || second in 0..10_000)) { "Quantity must be between 0 and 10,000" }
+        require(note.length <= 2_000) { "Accessory note is too long" }
         dao.insertAccessory(Accessory(newId(), id, name.trim(), first, second, note))
         recordChange(id, null, "ACCESSORY_ADDED")
+    }
+    /** Update the same accessory row at return; it remains attached to its original operation. */
+    suspend fun editAccessory(inspectionId: String, accessoryId: String, name: String,
+                              first: Int, second: Int?, note: String) = db.withTransaction {
+        val cleaned = name.trim()
+        require(cleaned.length in 1..120) { "Accessory name must have 1–120 characters" }
+        require(first in 0..10_000 && (second == null || second in 0..10_000)) {
+            "Quantity must be between 0 and 10,000"
+        }
+        require(note.length <= 2_000) { "Accessory note is too long" }
+        val current = dao.accessories(inspectionId).firstOrNull { it.id == accessoryId }
+            ?: error("Accessory not found in this operation")
+        dao.updateAccessory(current.copy(name = cleaned, baselineQuantity = first,
+            returnQuantity = second, note = note))
+        recordChange(inspectionId, null, "ACCESSORY_UPDATED")
+    }
+    suspend fun removeAccessory(inspectionId: String, accessoryId: String) = db.withTransaction {
+        require(dao.accessories(inspectionId).any { it.id == accessoryId }) {
+            "Accessory not found in this operation"
+        }
+        require(dao.deleteAccessory(accessoryId) == 1) { "Accessory could not be deleted" }
+        recordChange(inspectionId, null, "ACCESSORY_DELETED")
     }
     suspend fun updateDue(id: String, dueAt: Long?, leadMinutes: Int?) = db.withTransaction {
         require(leadMinutes == null || leadMinutes in 0..10080)
