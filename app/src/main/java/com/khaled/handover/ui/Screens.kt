@@ -365,36 +365,64 @@ private data class InspectionContent(val inspection: Inspection?, val items: Lis
 }
 
 @Composable private fun ReminderEditor(vm:HandoverViewModel, inspection:Inspection) {
-    val context=LocalContext.current
-    var pendingDue by remember { mutableStateOf<Long?>(null) }
-    var lead by remember { mutableIntStateOf(inspection.reminderLeadMinutes ?: 60) }
-    val notifications=rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if(granted) pendingDue?.let {due->com.khaled.handover.reminders.ReminderScheduler.schedule(context,inspection.id,due,lead)}
+    val context = LocalContext.current
+    var pendingDue by rememberSaveable { mutableStateOf<Long?>(null) }
+    var lead by rememberSaveable { mutableIntStateOf(inspection.reminderLeadMinutes ?: 60) }
+    var pendingLead by rememberSaveable { mutableIntStateOf(lead) }
+    val scheduler = com.khaled.handover.reminders.ReminderScheduler
+    val notifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        val due = pendingDue
+        if (granted && due != null) vm.task {
+            // A permission callback can arrive after recreation or after the date was changed.
+            val saved = vm.repo.dao.getInspection(inspection.id)
+            if (saved?.dueAt == due && saved.reminderLeadMinutes == pendingLead)
+                scheduler.schedule(context, inspection.id, due, pendingLead)
+            pendingDue = null
+        } else {
+            pendingDue = null
+            if (!granted) vm.error = "Return date saved, but notifications were not permitted"
+        }
     }
     fun chooseDate() {
-        val calendar=java.util.Calendar.getInstance()
-        android.app.DatePickerDialog(context,{_,year,month,day->
-            android.app.TimePickerDialog(context,{_,hour,minute->
-                calendar.set(year,month,day,hour,minute);calendar.set(java.util.Calendar.SECOND,0)
-                val due=calendar.timeInMillis;pendingDue=due
-                vm.task {vm.repo.updateDue(inspection.id,due,lead)}
-                if (android.os.Build.VERSION.SDK_INT>=33 && ContextCompat.checkSelfPermission(context,Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED)
-                    notifications.launch(Manifest.permission.POST_NOTIFICATIONS)
-                else com.khaled.handover.reminders.ReminderScheduler.schedule(context,inspection.id,due,lead)
-            },calendar.get(java.util.Calendar.HOUR_OF_DAY),calendar.get(java.util.Calendar.MINUTE),false).show()
-        },calendar.get(java.util.Calendar.YEAR),calendar.get(java.util.Calendar.MONTH),calendar.get(java.util.Calendar.DAY_OF_MONTH)).show()
+        val calendar = java.util.Calendar.getInstance()
+        android.app.DatePickerDialog(context, { _, year, month, day ->
+            android.app.TimePickerDialog(context, { _, hour, minute ->
+                calendar.set(year, month, day, hour, minute)
+                calendar.set(java.util.Calendar.SECOND, 0)
+                val due = calendar.timeInMillis
+                val chosenLead = lead
+                vm.task {
+                    // The notification is never scheduled before the Room transaction succeeds.
+                    vm.repo.updateDue(inspection.id, due, chosenLead)
+                    if (android.os.Build.VERSION.SDK_INT >= 33 &&
+                        ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                        pendingDue = due
+                        pendingLead = chosenLead
+                        notifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    } else scheduler.schedule(context, inspection.id, due, chosenLead)
+                }
+            }, calendar.get(java.util.Calendar.HOUR_OF_DAY), calendar.get(java.util.Calendar.MINUTE), false).show()
+        }, calendar.get(java.util.Calendar.YEAR), calendar.get(java.util.Calendar.MONTH), calendar.get(java.util.Calendar.DAY_OF_MONTH)).show()
     }
+    val finished = inspection.status == Progress.RETURN_DONE || inspection.status == Progress.ARCHIVED
     AppCard(Modifier.fillMaxWidth()) {
-        Text("Return reminder",fontWeight=FontWeight.Bold,fontSize=17.sp)
-        Text(inspection.dueAt?.let{DateFormat.getDateTimeInstance().format(Date(it))}?:"Not scheduled",fontSize=13.sp)
-        Text("Remind me before",fontSize=13.sp)
-        SingleChoiceRow(listOf("60","360","1440","2880"),lead.toString()) {lead=it.toInt()}
-        PrimaryButton("Set return date & reminder") {chooseDate()}
-        if(inspection.dueAt!=null) TextButton(onClick={
-            com.khaled.handover.reminders.ReminderScheduler.cancel(context,inspection.id)
-            vm.task {vm.repo.updateDue(inspection.id,null,null)}
-        }){Text("Cancel reminder")}
-        Text("Organizational, non-exact local reminder; notifications require permission.",fontSize=12.sp)
+        Text("Return reminder", fontWeight = FontWeight.Bold, fontSize = 17.sp)
+        Text(inspection.dueAt?.let { DateFormat.getDateTimeInstance().format(Date(it)) } ?: "Not scheduled", fontSize = 13.sp)
+        Text("Remind me before", fontSize = 13.sp)
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf(60 to "1 hour", 360 to "6 hours", 1440 to "1 day", 2880 to "2 days").forEach { (minutes,label) ->
+                FilterChip(selected = lead == minutes, onClick = { lead = minutes }, label = { Text(label) })
+            }
+        }
+        PrimaryButton("Set return date & reminder", enabled = !finished) { chooseDate() }
+        if (finished) Text("Return already completed or archived; no further reminder will be sent", fontSize = 12.sp)
+        if (inspection.dueAt != null) TextButton(onClick = {
+            vm.task {
+                vm.repo.updateDue(inspection.id, null, null)
+                scheduler.cancel(context, inspection.id)
+            }
+        }) { Text("Cancel reminder") }
+        Text("Local, non-exact reminder. Notifications require permission.", fontSize = 12.sp)
     }
 }
 
