@@ -16,6 +16,18 @@ class InspectionRepository(ctx: Context, val db: HandoverDb) {
     val dao = db.dao()
     val assets = AssetStore(ctx)
     val inspections: Flow<List<Inspection>> get() = dao.watchInspections()
+    /** Runs at startup, after journal recovery and before UI access; never removes referenced originals. */
+    suspend fun recoverOrphanOriginals() = withContext(Dispatchers.IO) {
+        val referenced=dao.allInspections().flatMap { inspection ->
+            dao.sessions(inspection.id).flatMap { dao.sessionMedia(it.id) }
+        }.mapTo(mutableSetOf()) { it.relativePath.substringAfterLast('/') }
+        val originals=File(assets.root,"originals")
+        val managed=Regex("[0-9a-f-]{36}\\.(jpg|png|webp|heic|part)")
+        originals.listFiles()?.forEach { file ->
+            if(file.isFile && managed.matches(file.name) && file.name !in referenced) file.delete()
+        }
+        assets.deleteTemps()
+    }
     private fun snapshot(specs: List<PointSpec>) = JSONArray().also { j -> specs.forEach { j.put(JSONObject().put("key",it.key).put("group",it.group).put("label",it.label).put("hint",it.hint)) } }.toString()
 
     suspend fun create(title: String, category: String, context: String, role: String, rooms: List<String> = emptyList()): String {
