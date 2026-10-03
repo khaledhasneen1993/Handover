@@ -165,21 +165,44 @@ fun HandoverScreen(vm: HandoverViewModel) {
     }
 }
 /** Decode preview images off the UI thread. Never open full-resolution originals for cards. */
-@Composable private fun Thumb(file: File?, modifier: Modifier = Modifier, contentDescription: String = "Documented photo", alpha: Float = 1f) {
-    val image by produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, file?.path, file?.lastModified()) {
+/** Decode off the UI thread; a missing generated thumbnail is recreated only from a
+ * verified original, never from a persisted thumbnail destination. */
+@Composable private fun Thumb(file: File?, modifier: Modifier = Modifier,
+    contentDescription: String = "Documented photo", alpha: Float = 1f) {
+    val app = LocalContext.current.applicationContext as? com.khaled.handover.HandoverApp
+    val image by produceState<androidx.compose.ui.graphics.ImageBitmap?>(null,
+        file?.path, file?.lastModified()) {
         value = withContext(Dispatchers.IO) {
-            if (file?.isFile != true) null else try {
-                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                BitmapFactory.decodeFile(file.path, bounds)
-                val options = BitmapFactory.Options().apply {
-                    inSampleSize = boundedSampleSize(bounds.outWidth, bounds.outHeight, 1000)
+            if (file == null) null else {
+                val store = app?.repository?.assets
+                if (store != null && (!file.isFile || file.length() == 0L)) {
+                    val id = file.nameWithoutExtension
+                    if (com.khaled.handover.backup.RestoreAdmission.validUuid(id) &&
+                        file.canonicalFile == store.resolve(
+                            com.khaled.handover.backup.RestoreAdmission.thumbnailFor(id))) {
+                        val record = app.repository.dao.mediaById(id)
+                        if (record != null) runCatching { store.rebuildThumbnail(record) }
+                    }
                 }
-                BitmapFactory.decodeFile(file.path, options)?.asImageBitmap()
-            } catch (_: Exception) { null }
+                if (!file.isFile) null else try {
+                    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    BitmapFactory.decodeFile(file.path, bounds)
+                    val options = BitmapFactory.Options().apply {
+                        inSampleSize = boundedSampleSize(bounds.outWidth, bounds.outHeight, 1000)
+                    }
+                    BitmapFactory.decodeFile(file.path, options)?.asImageBitmap()
+                } catch (_: Exception) { null }
+            }
         }
     }
-    if (image != null) Image(image!!, contentDescription, modifier.alpha(alpha).clip(RoundedCornerShape(16.dp)), contentScale=ContentScale.Fit)
-    else Box(modifier.clip(RoundedCornerShape(16.dp)).background(MaterialTheme.colorScheme.surfaceVariant), contentAlignment=Alignment.Center) { Icon(Icons.Default.PhotoCamera, "No photograph yet", Modifier.size(35.dp)) }
+    if (image != null) Image(image!!, contentDescription,
+        modifier.alpha(alpha).clip(RoundedCornerShape(16.dp)),
+        contentScale = ContentScale.Fit)
+    else Box(modifier.clip(RoundedCornerShape(16.dp))
+        .background(MaterialTheme.colorScheme.surfaceVariant),
+        contentAlignment = Alignment.Center) {
+        Icon(Icons.Default.PhotoCamera, "No photograph yet", Modifier.size(35.dp))
+    }
 }
 
 @Composable private fun HomeScreen(vm: HandoverViewModel, inspections: List<Inspection>, archived: Boolean=false) {
@@ -854,7 +877,7 @@ private data class SessionContent(val session: CaptureSession?, val items:List<C
                 Text(tr("Storage"),fontWeight=FontWeight.Bold)
                 Text("Originals: ${(context.filesDir.resolve("originals").listFiles()?.sumOf{it.length()}?:0L)/1024/1024} MB",fontSize=13.sp)
                 Text("Derived thumbnails: ${vm.repo.assets.derivedBytes()/1024/1024} MB",fontSize=13.sp)
-                OutlinedButton(onClick={vm.repo.assets.clearThumbnails()}) {Text(tr("Clear generated thumbnails"))}
+                OutlinedButton(onClick={vm.task { withContext(Dispatchers.IO) { vm.repo.assets.clearThumbnails() } }}, enabled=!vm.loading) {Text(tr("Clear generated thumbnails"))}
                 Text(tr("If you uninstall the app without exporting a backup, its local data may be lost."),fontSize=12.sp)
             }}
         }
