@@ -14,6 +14,7 @@ import com.khaled.handover.media.AssetStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import org.json.JSONArray
 import java.io.File
 import java.io.FileOutputStream
 import java.text.DateFormat
@@ -42,12 +43,31 @@ class ReportMaker(private val context: Context, private val repository: Inspecti
     }
     suspend fun create(id: String, options: Options): File = withContext(Dispatchers.IO) {
         val dao = repository.dao
-        val inspection = dao.getInspection(id) ?: error("Inspection not found")
-        val sessions = dao.sessions(id)
-        val items = dao.items(id)
-        val notes = dao.observations(id)
-        val accessories = dao.accessories(id)
-        val l = labels(options.language)
+        // Room transaction freezes the data model used by this particular PDF. Rendering
+        // outside the transaction cannot accidentally mix several concurrent revisions.
+        data class Snapshot(
+            val inspection: Inspection, val sessions: List<CaptureSession>, val items: List<ChecklistItem>,
+            val notes: List<Observation>, val accessories: List<Accessory>,
+            val states: Map<String,List<ItemSessionState>>, val media: Map<String,List<MediaAsset>>,
+            val annotations: Map<String,List<Annotation>>, val comparisons: Map<String,ComparisonPair>,
+            val revision: Int
+        )
+        val snapshot=repository.db.withTransaction {
+            val inspection=dao.getInspection(id) ?: error("Inspection not found")
+            val sessions=dao.sessions(id)
+            val media=sessions.associate { it.id to dao.sessionMedia(it.id) }
+            val assets=media.values.flatten()
+            val pairs=assets.mapNotNull { dao.pairForReturn(it.id) }.associateBy { it.returnAssetId }
+            Snapshot(inspection,sessions,dao.items(id),dao.observations(id),dao.accessories(id),
+                sessions.associate { it.id to dao.states(it.id) },media,
+                assets.associate { it.id to dao.annotations(it.id) },pairs,dao.revision(id) ?: 0)
+        }
+        val inspection=snapshot.inspection
+        val sessions=snapshot.sessions
+        val items=snapshot.items
+        val notes=snapshot.notes
+        val accessories=snapshot.accessories
+        val l=labels(options.language)
         val fileId = newId()
         val temp = File(repository.assets.exports, "$fileId.part")
         val pdf = File(repository.assets.exports, "$fileId.pdf")
@@ -131,9 +151,43 @@ class ReportMaker(private val context: Context, private val repository: Inspecti
                 ensure(h + 45f)
                 text(label, size = 10f, bold = true, spacing = 5f)
                 paint.isFilterBitmap = true; paint.color = Color.WHITE
-                canvas.drawBitmap(bitmap, null, RectF(inset + (maxW - w)/2f, y, inset + (maxW + w)/2f, y + h), paint)
+                // Exported annotations are baked into raster pixels, never the immutable source.
+                val marks=snapshot.annotations[asset.id].orEmpty()
+                val exported=if(marks.isEmpty()) bitmap else Bitmap.createBitmap(bitmap.width,bitmap.height,Bitmap.Config.ARGB_8888).also { raster ->
+                    val layer=Canvas(raster)
+                    layer.drawBitmap(bitmap,0f,0f,null)
+                    val pen=Paint(Paint.ANTI_ALIAS_FLAG).apply { color=Color.rgb(255,168,0);strokeWidth=(bitmap.width / 160f).coerceAtLeast(3f);style=Paint.Style.STROKE }
+                    for(mark in marks) try {
+                        val coords=JSONObject(mark.geometryJson)
+                        val x=coords.optDouble("x",0.5).coerceIn(0.0,1.0).toFloat()*raster.width
+                        val yy=coords.optDouble("y",0.5).coerceIn(0.0,1.0).toFloat()*raster.height
+                        when(mark.kind) {
+                            "CIRCLE" -> layer.drawCircle(x,yy,(raster.width / 14f).coerceAtLeast(12f),pen)
+                            "RECTANGLE" -> {
+                                val x2=coords.optDouble("x2",0.9).coerceIn(0.0,1.0).toFloat()*raster.width
+                                val y2=coords.optDouble("y2",0.9).coerceIn(0.0,1.0).toFloat()*raster.height
+                                layer.drawRect(minOf(x,x2),minOf(yy,y2),maxOf(x,x2),maxOf(yy,y2),pen)
+                            }
+                            "ARROW" -> {
+                                val x2=coords.optDouble("x2",0.9).coerceIn(0.0,1.0).toFloat()*raster.width
+                                val y2=coords.optDouble("y2",0.9).coerceIn(0.0,1.0).toFloat()*raster.height
+                                layer.drawLine(x,yy,x2,y2,pen)
+                            }
+                        }
+                    } catch (_:Exception) { /* malformed historical marker is not drawn */ }
+                }
+                canvas.drawBitmap(exported,null,RectF(inset+(maxW-w)/2f,y,inset+(maxW+w)/2f,y+h),paint)
+                if(exported !== bitmap) exported.recycle()
                 y += h + 12f
-                text("${asset.source.lowercase().replaceFirstChar { it.uppercase() }} · SHA-256 ${asset.sha256.take(12)}…", 8f)
+                val provenance=when(asset.timestampSource) {
+                    "DEVICE_CLOCK" -> "Device clock (unverified)"
+                    "UNVERIFIED_EXIF" -> "Photo EXIF (unverified)"
+                    else -> "Time not independently verified"
+                }
+                text("${asset.source} · $provenance · SHA-256 ${asset.sha256.take(12)}…",8f)
+                asset.capturedAt?.let { text("Photo time: ${format.format(Date(it))}",8f) }
+                text("Added to app: ${format.format(Date(asset.importedAt))}",8f)
+                if(!options.hideLocation) asset.locationText?.takeIf { it.isNotBlank() }?.let { text("Recorded location: $it",8f) }
             } finally { bitmap.recycle() }
         }
         fun fmt(t: Long, zone: String): String { format.timeZone = TimeZone.getTimeZone(zone); return "${format.format(Date(t))} ($zone)" }
@@ -143,7 +197,8 @@ class ReportMaker(private val context: Context, private val repository: Inspecti
             paint.color = teal; canvas.drawRect(inset, y - 6f, pageWidth - inset, y - 3f, paint)
             text(l[0], 21f, true)
             text(inspection.title, 16f, true)
-            text("ID: ${inspection.id}  ·  ${inspection.category} / ${inspection.context}", 10f)
+            if(!options.hideIdentifiers) text("ID: ${inspection.id}  ·  ${inspection.category} / ${inspection.context}",10f)
+            else text("${inspection.category} / ${inspection.context}",10f)
             if (!options.hideParty && !inspection.partyName.isNullOrBlank()) text("Party: ${inspection.partyName}")
             if (!options.hideIdentifiers && !inspection.reference.isNullOrBlank()) text("Reference: ${inspection.reference}")
             inspection.description?.takeIf { it.isNotBlank() }?.let { text(it) }
@@ -151,14 +206,14 @@ class ReportMaker(private val context: Context, private val repository: Inspecti
             for (session in sessions) {
                 text(if (session.phase == Phase.BASELINE) l[1] else l[2], 16f, true)
                 text(fmt(session.startedAt, session.zoneId), 10f)
-                val states = dao.states(session.id)
+                val states = snapshot.states[session.id].orEmpty()
                 val counts = countStatuses(states.map { it.captureStatus })
                 text("${counts.captured} captured  ·  ${counts.skipped} skipped  ·  ${counts.notApplicable} N/A  ·  ${counts.pending} pending", 10f)
                 if (session.completedAt == null) text("In progress · Revision ${session.revision}", 9f)
-                if (session.phase == Phase.RETURN && dao.sessionMedia(session.id).isEmpty()) text(l[5])
+                if (session.phase == Phase.RETURN && snapshot.media[session.id].isNullOrEmpty()) text(l[5])
                 for (item in items) {
                     val state = states.firstOrNull { it.itemId == item.id }
-                    val photos = dao.itemMedia(item.id, session.id)
+                    val photos = snapshot.media[session.id].orEmpty().filter { it.itemId==item.id }
                     if (options.detailed || photos.isNotEmpty()) {
                         text("${item.groupName} · ${item.label} — ${state?.captureStatus ?: "NOT_CAPTURED"}", 11f, true)
                         (if (options.detailed) photos else photos.take(1)).forEachIndexed { i, asset -> photo(asset, "${item.label} · ${i + 1}") }
@@ -169,6 +224,20 @@ class ReportMaker(private val context: Context, private val repository: Inspecti
             if (sessions.none { it.phase == Phase.RETURN }) {
                 text(l[5], 10f)
                 line()
+            }
+            if(snapshot.comparisons.isNotEmpty()) {
+                text(when(options.language) {"ar"->"مقارنة الصور المختارة";"fr"->"Comparaisons sélectionnées";"es"->"Comparaciones seleccionadas";else->"User-selected comparisons"},15f,true)
+                val media=snapshot.media.values.flatten().associateBy {it.id}
+                for(pair in snapshot.comparisons.values) {
+                    val before=media[pair.baselineAssetId] ?: continue
+                    val after=media[pair.returnAssetId] ?: continue
+                    val label=items.firstOrNull {it.id==before.itemId}?.label ?: "Checkpoint"
+                    text("$label · User assessment: ${pair.assessment.replace('_',' ').lowercase()}",10f,true)
+                    if(pair.note.isNotBlank()) text(pair.note,10f)
+                    photo(before,"$label · Selected initial photo")
+                    photo(after,"$label · Selected return photo")
+                    line()
+                }
             }
             if (notes.isNotEmpty()) {
                 text(l[3], 15f, true)
@@ -193,7 +262,7 @@ class ReportMaker(private val context: Context, private val repository: Inspecti
             FileOutputStream(temp).use { doc.writeTo(it); it.fd.sync() }
             require(temp.renameTo(pdf)) { "Unable to finalize PDF" }
             repository.db.withTransaction {
-                dao.insertReport(ReportRecord(fileId, id, if (options.detailed) "DETAILED" else "SUMMARY", dao.revision(id) ?: 0,
+                dao.insertReport(ReportRecord(fileId, id, if (options.detailed) "DETAILED" else "SUMMARY", snapshot.revision,
                     System.currentTimeMillis(), options.language, "exports/${pdf.name}",
                     JSONObject().put("hideParty", options.hideParty).put("hideIdentifiers", options.hideIdentifiers).put("hideLocation", options.hideLocation).toString()))
             }
