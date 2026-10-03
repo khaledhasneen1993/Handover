@@ -107,7 +107,16 @@ class HandoverViewModel(app: Application, private val saved: SavedStateHandle): 
         repo.note(inspectionId, item, asset, kind, detail, assessment)
         navigateToScreen("SESSION")
     }
-    fun addAccessory(name: String, before: Int, after: Int?, note: String) = task { repo.addAccessory(inspectionId, name, before, after, note) }
+    fun addAccessory(name: String, before: Int, after: Int?, note: String, onSaved: () -> Unit = {}) = task {
+        repo.addAccessory(inspectionId, name, before, after, note)
+        onSaved() // Never discard a draft until the repository transaction succeeds.
+    }
+    fun editAccessory(id: String, name: String, before: Int, after: Int?, note: String,
+                      onSaved: () -> Unit = {}) = task {
+        repo.editAccessory(inspectionId, id, name, before, after, note)
+        onSaved()
+    }
+    fun deleteAccessory(id: String) = task { repo.removeAccessory(inspectionId, id) }
     fun updatePair(pair: ComparisonPair, assessment: String) = task { repo.updateComparison(inspectionId, pair.returnAssetId, pair.baselineAssetId, assessment, pair.note) }
     fun linkPair(returnAssetId: String, baselineAssetId: String, assessment: String = Assessment.NONE) = task {
         repo.updateComparison(inspectionId, returnAssetId, baselineAssetId, assessment)
