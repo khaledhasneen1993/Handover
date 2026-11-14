@@ -7,6 +7,8 @@ from pathlib import Path
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
+import requests
+
 from polymarket_sledge import (
     HIGH_VOLUME_ONLY,
     HOST,
@@ -64,7 +66,9 @@ class PaperSledge(PolymarketSledge):
         if not token_id:
             return {}
         try:
-            raw = get_json(f"{HOST}/book", token_id=token_id)
+            response = requests.get(f"{HOST}/book", params={"token_id": token_id}, timeout=12)
+            response.raise_for_status()
+            raw = response.json()
             book = {}
             for side in ("asks", "bids"):
                 levels = [(Decimal(row["price"]), Decimal(row["size"])) for row in raw[side]]
