@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Polymarket Sledge</title>
+<style>
+:root{color-scheme:dark;font:16px system-ui,sans-serif;background:#0d141c;color:#eaf2f9}
+*{box-sizing:border-box}body{margin:0}main{max-width:1050px;margin:auto;padding:24px 16px}
+header{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+h1{margin:0;font-size:clamp(1.45rem,5vw,2.25rem)}h2{font-size:1.08rem;margin:0 0 14px}
+p{margin:8px 0}.muted,th{color:#a9bdce}.badge{color:#81e9c1;border:1px solid #2e6658;border-radius:999px;padding:6px 12px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin:22px 0}
+.card,section{background:#15222f;border:1px solid #2b3c4b;border-radius:13px;padding:14px}
+.card strong{display:block;font-size:1.5rem;color:#81e9c1;margin-top:5px}
+section{margin:12px 0}.scroll{overflow:auto}table{border-collapse:collapse;width:100%;text-align:right}
+th,td{padding:9px;border-bottom:1px solid #2b3c4b;vertical-align:top}
+td{font-size:.91rem}td:not(:first-child),th{white-space:nowrap}
+#activity td:last-child{white-space:normal;overflow-wrap:anywhere}#link{color:#ffbe83}
+</style>
+<main>
+<header><h1 dir="ltr">Polymarket Sledge</h1><span class="badge">تداول تجريبي</span></header>
+<p id="link" role="status">جاري الاتصال بالمشغّل المحلي…</p>
+<div class="cards">
+  <div class="card">الرصيد الابتدائي<strong id="initial">—</strong></div>
+  <div class="card">السيولة المتبقية<strong id="cash">—</strong></div>
+  <div class="card">المبلغ المستخدم<strong id="spent">—</strong></div>
+  <div class="card">التعبئات التجريبية<strong id="fill_count">—</strong></div>
+</div>
+<section>
+  <h2>المسح الحي</h2><p id="scan">—</p><p class="muted" id="books">—</p>
+</section>
+<section>
+  <h2>إشارات الاستراتيجية</h2>
+  <div class="scroll"><table><thead><tr><th>السوق</th><th>الوقت</th><th>الإشارة</th><th>Yes</th><th>No</th><th>Edge</th><th>النتيجة</th></tr></thead><tbody id="signals"></tbody></table></div>
+</section>
+<section>
+  <h2>التعبئات التجريبية الأخيرة</h2>
+  <div class="scroll"><table><thead><tr><th>رمز الحصة</th><th>السعر</th><th>الحصص</th><th>التكلفة</th></tr></thead><tbody id="fills"></tbody></table></div>
+</section>
+<section>
+  <h2>أخطاء المسح والاتصال</h2>
+  <div class="scroll"><table><thead><tr><th>الوقت</th><th>الرسالة</th></tr></thead><tbody id="activity"></tbody></table></div>
+</section>
+</main>
+<script>
+const el = id => document.getElementById(id);
+const money = value => Number(value).toFixed(2) + " USDC";
+const clock = value => value ? new Date(value).toLocaleTimeString("ar-JO") : "—";
+function rows(id, data, columns, empty) {
+  const elements = data.map(values => {
+    const row = document.createElement("tr");
+    values.forEach(value => {
+      const cell = row.insertCell();
+      cell.textContent = value ?? "—";
+      cell.dir = "auto";
+    });
+    return row;
+  });
+  if (!elements.length) {
+    const row = document.createElement("tr");
+    const cell = row.insertCell();
+    cell.colSpan = columns;
+    cell.textContent = empty;
+    elements.push(row);
+  }
+  el(id).replaceChildren(...elements);
+}
+async function refresh() {
+  try {
+    const response = await fetch("/api/status", {signal: AbortSignal.timeout(3500)});
+    if (!response.ok) throw new Error("status");
+    const s = await response.json();
+    el("link").textContent = "اللوحة متصلة · آخر تحديث " + clock(Date.now());
+    el("initial").textContent = money(s.initial);
+    el("cash").textContent = money(s.cash);
+    el("spent").textContent = money(Number(s.initial) - Number(s.cash));
+    el("fill_count").textContent = s.fill_count;
+    el("scan").textContent = s.status + " · الأسواق المفحوصة " + s.checked + " من " + s.selected;
+    el("books").textContent = "بدء الدورة " + clock(s.started_scan) + " · دفاتر ناجحة " + s.books_ok + " · دفاتر تعذّرت " + s.books_failed;
+    rows("signals", s.signals.map(x => [
+      x.market, clock(x.time), x.type === "arb" ? "مراجحة" : "طرف واحد", x.yes, x.no,
+      (x.edge * 100).toFixed(1) + "%", x.outcome
+    ]), 7, "لسه ما ظهرت إشارات");
+    rows("fills", s.fills.map(x => [
+      x.token.slice(0, 12) + "…", x.price, Number(x.shares).toFixed(4), money(x.cost)
+    ]), 4, "لسه ما في تعبئات");
+    rows("activity", s.activity.map(x => [clock(x.time), x.message]), 2, "لا توجد أخطاء مسجّلة");
+  } catch {
+    el("link").textContent = "الاتصال بالمشغّل المحلي انقطع. البيانات المعروضة من آخر تحديث ناجح.";
+  } finally {
+    setTimeout(refresh, 2000);
+  }
+}
+refresh();
+</script>
+</html>
