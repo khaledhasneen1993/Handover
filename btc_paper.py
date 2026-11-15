@@ -56,6 +56,11 @@ def pair_size(up, down, budget, minimum):
 
 
 class BtcPaper(DashboardBot):
+    def __init__(self, state_path, execution_delay=0):
+        super().__init__(state_path)
+        self.execution_delay = execution_delay
+        self.rejected_windows = set(self.state.get("rejected_windows", []))
+
     def load_market(self, slug):
         markets = get_json(GAMMA, slug=slug, closed="any")
         return next((market for market in markets if market.get("slug") == slug), None)
@@ -116,15 +121,29 @@ class BtcPaper(DashboardBot):
         if not pair or time.time() >= end or any(t["slug"] == slug for t in self.state.get("trades", [])):
             return
         shares, (up_cost, down_cost) = pair
-        # Simulate sequential fills. Down must still fit its quoted cost on a fresh book.
+        if self.execution_delay:
+            time.sleep(self.execution_delay)
+            fresh_up = self.get_orderbook(tokens["Up"]) if time.time() < end else {}
+            actual_up = quote(fresh_up, shares)
+            if actual_up is None or actual_up > up_cost or time.time() >= end:
+                if slug not in self.rejected_windows:
+                    self.rejected_windows.add(slug)
+                    self.save({**self.state, "rejected_windows": sorted(self.rejected_windows)})
+                return
+            up_cost = actual_up
+
+        # The second leg can still fail after the first has filled.
         fills = [self.fill(tokens["Up"], "Up", shares, up_cost)]
-        fresh_down = self.get_orderbook(tokens["Down"])
+        if self.execution_delay:
+            time.sleep(self.execution_delay)
+        fresh_down = self.get_orderbook(tokens["Down"]) if time.time() < end else {}
         actual_down = quote(fresh_down, shares)
         if actual_down is not None and actual_down <= down_cost and time.time() < end:
             fills.append(self.fill(tokens["Down"], "Down", shares, actual_down))
         cost = sum(D(fill["cost"]) for fill in fills)
         trade = {"slug": slug, "end": end, "cost": str(cost), "fills": fills}
         self.save({
+            **self.state,
             "cash": str(D(self.state["cash"]) - cost),
             "fills": [*self.state["fills"], *fills],
             "trades": [*self.state.get("trades", []), trade],
@@ -144,7 +163,16 @@ class BtcPaper(DashboardBot):
 
     def snapshot(self):
         data = super().snapshot()
-        trades = self.state.get("trades", [])
+        with self.lock:
+            state = self.state
+        trades = state.get("trades", [])
+        data["rejected"] = len(state.get("rejected_windows", []))
+        data["pair_pnl"] = str(sum(
+            D(t["pnl"]) for t in trades if t.get("settled") and len(t["fills"]) == 2
+        ))
+        data["single_pnl"] = str(sum(
+            D(t["pnl"]) for t in trades if t.get("settled") and len(t["fills"]) == 1
+        ))
         today = datetime.now(AMMAN).date()
         data["daily"] = str(sum(
             D(trade["pnl"]) for trade in trades if trade.get("settled")
@@ -159,8 +187,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--state", type=Path, default=Path("btc-paper-state.json"))
+    parser.add_argument("--strict", action="store_true", help="Recheck both legs after a 750 ms delay per leg")
     args = parser.parse_args()
-    bot = BtcPaper(args.state)
+    bot = BtcPaper(args.state, execution_delay=0.75 if args.strict else 0)
     handler = DashboardLog(bot)
     log.addHandler(handler)
     page = PAGE.read_text().replace("<th>Yes</th><th>No</th>", "<th>Up</th><th>Down</th>")
@@ -171,6 +200,21 @@ def main():
     page = page.replace('money(Number(s.initial) - Number(s.cash))',
                         'money(s.spent); el("daily").textContent = money(s.daily); '
                         'el("pending").textContent = s.pending')
+    if args.strict:
+        page = page.replace(
+            'id="pending">—</strong></div>',
+            'id="pending">—</strong></div>'
+            '<div class="card">ربح المراجحة المكتملة<strong id="pair_pnl">—</strong></div>'
+            '<div class="card">ربح أو خسارة طرف واحد<strong id="single_pnl">—</strong></div>'
+            '<div class="card">نوافذ شهدت رفض الدخول بعد التأخير<strong id="rejected">—</strong></div>',
+        )
+        page = page.replace(
+            'el("pending").textContent = s.pending',
+            'el("pending").textContent = s.pending; '
+            'el("pair_pnl").textContent = money(s.pair_pnl); '
+            'el("single_pnl").textContent = money(s.single_pnl); '
+            'el("rejected").textContent = s.rejected',
+        )
     server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(bot, page.encode()))
     Thread(target=server.serve_forever, daemon=True).start()
     print(f"Dashboard: http://127.0.0.1:{server.server_port}", flush=True)
