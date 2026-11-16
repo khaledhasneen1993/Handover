@@ -35,6 +35,13 @@ def quote(book, shares):
     return None
 
 
+def profitable_pair(up_cost, down_cost, shares, budget):
+    if up_cost is None or down_cost is None:
+        return False
+    total = up_cost + down_cost
+    return total <= budget and total < shares
+
+
 def pair_size(up, down, budget, minimum):
     """Find the largest profitable size within the simulated budget."""
     if not up.get("asks") or not down.get("asks"):
@@ -47,7 +54,7 @@ def pair_size(up, down, budget, minimum):
         middle = (low + high) // 2
         shares = middle * CENT
         costs = [quote(book, shares) for book in (up, down)]
-        if None not in costs and sum(costs) <= budget and sum(costs) < shares:
+        if profitable_pair(*costs, shares, budget):
             best = shares, costs
             low = middle + 1
         else:
@@ -123,14 +130,15 @@ class BtcPaper(DashboardBot):
         shares, (up_cost, down_cost) = pair
         if self.execution_delay:
             time.sleep(self.execution_delay)
-            fresh_up = self.get_orderbook(tokens["Up"]) if time.time() < end else {}
-            actual_up = quote(fresh_up, shares)
-            if actual_up is None or actual_up > up_cost or time.time() >= end:
+            down = self.get_orderbook(tokens["Down"]) if time.time() < end else {}
+            up = self.get_orderbook(tokens["Up"]) if time.time() < end else {}
+            pair = pair_size(up, down, budget, minimum)
+            if not pair or time.time() >= end:
                 if slug not in self.rejected_windows:
                     self.rejected_windows.add(slug)
                     self.save({**self.state, "rejected_windows": sorted(self.rejected_windows)})
                 return
-            up_cost = actual_up
+            shares, (up_cost, down_cost) = pair
 
         # The second leg can still fail after the first has filled.
         fills = [self.fill(tokens["Up"], "Up", shares, up_cost)]
@@ -138,7 +146,12 @@ class BtcPaper(DashboardBot):
             time.sleep(self.execution_delay)
         fresh_down = self.get_orderbook(tokens["Down"]) if time.time() < end else {}
         actual_down = quote(fresh_down, shares)
-        if actual_down is not None and actual_down <= down_cost and time.time() < end:
+        can_fill_down = (
+            profitable_pair(up_cost, actual_down, shares, budget)
+            if self.execution_delay
+            else actual_down is not None and actual_down <= down_cost
+        )
+        if can_fill_down and time.time() < end:
             fills.append(self.fill(tokens["Down"], "Down", shares, actual_down))
         cost = sum(D(fill["cost"]) for fill in fills)
         trade = {"slug": slug, "end": end, "cost": str(cost), "fills": fills}
