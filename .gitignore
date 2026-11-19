@@ -1,3 +1,7 @@
 btc-live-state.json
 btc-live-state.lock
 btc-live-state.tmp
+btc-paper-realistic-*.json
+btc-paper-realistic-*.tmp
+btc-paper-realistic-*.lock
+__pycache__/
